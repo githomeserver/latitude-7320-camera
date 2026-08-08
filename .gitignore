@@ -1,0 +1,29 @@
+# Extracted kernel source - large, and not ours to redistribute
+kernel-src/
+
+# Raw ACPI dumps: the decompiled DSDT is 2.6 MB and machine-specific.
+# data/nvs.txt and the measurement logs are small and are the useful part.
+data/dsdt.dat
+data/dsdt.dsl
+data/*.raw
+
+# Build output
+*.o
+*.ko
+*.mod*
+*.cmd
+.tmp_versions/
+Module.symvers
+modules.order
+
+# Captured frames
+*.png
+*.bin
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Patch-generation working tree (nested git repo). The generated patches are
+# published in kernel-patches/ instead.
+upstream/

@@ -1,0 +1,49 @@
+sensor      ov5675 1-0036  /dev/v4l-subdev8
+csi2        Intel IPU6 CSI2 6  pad1
+capture     Intel IPU6 ISYS Capture 48  /dev/video49
+  configuring ov5675 1-0036:0 -> Intel IPU6 CSI2 6:1 -> Intel IPU6 ISYS Capture 48  SGRBG10_1X10/1296x972
+exposure    4..2016
+gain        128..2047
+format      1296x972 BA10 stride=2624
+
+== exposure ==
+  run 1: base   32.4 |  32.4  36.4  36.4  36.3  36.3  36.3  36.4  36.4 -> 1
+  run 2: base   32.4 |  32.4  36.4  36.3  36.4  36.4  36.3  36.3  36.4 -> 1
+  run 3: base   32.4 |  32.4  36.4  36.3  36.4  36.4  36.4  36.4  36.4 -> 1
+  run 4: base   32.4 |  32.4  36.3  36.4  36.4  36.4  36.4  36.4  36.4 -> 1
+  run 5: base   32.4 |  32.4  36.3  36.3  36.4  36.4  36.4  36.4  36.4 -> 1
+  run 6: base   32.4 |  32.4  36.4  36.4  36.4  36.4  36.4  36.4  36.4 -> 1
+  run 7: base   32.4 |  32.4  32.4  36.3  36.3  36.4  36.4  36.4  36.4 -> 2
+  run 8: base   32.4 |  32.4  36.4  36.4  36.4  36.4  36.4  36.4  36.4 -> 1
+  run 9: base   32.4 |  32.4  36.4  36.4  36.3  36.4  36.4  36.4  36.4 -> 1
+  --> raw offset = 1  (8/9 agree, all: [1, 1, 1, 1, 1, 1, 2, 1, 1])
+      => exposureDelay = 2 (raw offset + 1; see the docstring for the convention)
+
+== analogue_gain ==
+  bias: exposure=672 (so there is signal to amplify)
+  run 1: base   36.4 |  36.4  73.1  72.3  72.5  72.7  72.7  72.5  72.4 -> 1
+  run 2: base   36.4 |  36.4  72.5  73.1  72.6  72.2  73.6  72.8  72.7 -> 1
+  run 3: base   36.4 |  36.4  72.6  72.8  72.9  72.6  71.6  73.1  72.6 -> 1
+  run 4: base   36.4 |  36.4  72.8  72.6  73.1  73.2  73.7  72.1  72.9 -> 1
+  run 5: base   36.4 |  36.4  72.6  72.8  72.7  72.4  72.7  72.9  73.3 -> 1
+  run 6: base   36.4 |  36.4  73.2  72.4  73.4  72.3  72.7  72.5  72.7 -> 1
+  run 7: base   36.4 |  36.4  72.5  72.6  73.1  72.7  72.7  72.5  72.0 -> 1
+  run 8: base   36.4 |  36.4  72.5  73.2  72.9  73.1  72.7  73.1  73.0 -> 1
+  run 9: base   36.4 |  36.3  72.4  73.1  72.8  72.8  73.1  72.6  72.5 -> 1
+  --> raw offset = 1  (9/9 agree, all: [1, 1, 1, 1, 1, 1, 1, 1, 1])
+      => analogue_gainDelay = 2 (raw offset + 1; see the docstring for the convention)
+
+== vertical_blanking ==
+  stepping 1048 -> 4192 (frame gets longer)
+  run 1: base  33.4ms |  33.4  85.1  85.1  85.1  85.1  85.1  85.1  85.1 -> 1
+  run 2: base  33.4ms |  33.4  85.1  85.1  85.1  85.1  85.1  85.1  85.1 -> 1
+  run 3: base  33.4ms |  33.5  85.0  85.1  85.1  85.1  85.1  85.0  85.1 -> 1
+  run 4: base  33.4ms |  33.4  85.0  85.2  85.1  85.1  85.1  85.1  85.2 -> 1
+  run 5: base  33.4ms |  33.4  85.1  85.1  85.1  85.1  85.0  85.1  85.1 -> 1
+  run 6: base  33.4ms |  33.4  85.1  85.1  85.1  85.1  85.1  85.2  85.1 -> 1
+  run 7: base  33.4ms |  33.4  85.1  85.1  85.1  85.0  85.1  85.1  85.1 -> 1
+  run 8: base  33.4ms |  33.4  85.1  85.1  85.0  85.2  85.1  85.1  85.1 -> 1
+  run 9: base  33.4ms |  33.4  85.1  85.1  85.1  85.1  85.1  85.1  85.1 -> 1
+  --> raw offset = 1  (9/9 agree, all: [1, 1, 1, 1, 1, 1, 1, 1, 1])
+      => vblankDelay = 2
+

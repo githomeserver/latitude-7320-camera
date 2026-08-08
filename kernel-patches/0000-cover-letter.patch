@@ -1,0 +1,59 @@
+From 5f31335868283f39b6e99a2c0d703419209b509c Mon Sep 17 00:00:00 2001
+From: Sahan Nissanka <sanoptional@gmail.com>
+Date: Sat, 8 Aug 2026 18:53:11 +1000
+Subject: [PATCH 0/3] Enable the front camera on the Dell Latitude 7320 Detachable
+
+This series enables the user-facing 5MP camera on the Dell Latitude 7320
+Detachable, which has never worked on Linux. Two open reports ask for it:
+intel/ipu6-drivers issues #24 (2022) and #402 (2025), the latter blocked
+waiting for "OV5678 sensor specifications (clock rates, power requirements)".
+
+Those specifications turned out not to be needed. ACPI describes the front
+sensor as OVTI5678 and no driver has ever claimed that id, but the part is an
+OV5675: once powered it reports chip id 0x005675 at register 0x300a, and the
+values ov5675.c is sensitive to were read from the machine's ACPI SSDB before
+the sensor was ever powered and both agree - 2 CSI-2 data lanes and a
+19.2 MHz external clock. The advertised 5MP also matches the driver's native
+2592x1944. So no new sensor driver and no new register tables are required.
+
+That leaves three small pieces:
+
+  1/3 gives the TPS68470 PMIC board data, without which the sensors are not
+      even enumerated - they declare an ACPI _DEP on the control logic, so no
+      i2c client is created until it probes.
+  2/3 adds the OVTI5678 id to ov5675.
+  3/3 adds the ipu-bridge entry so a software node is created for it.
+
+The patches touch two subsystems: 1/3 is platform-driver-x86, 2/3 and 3/3 are
+media. They are independent of each other in build terms, but none of them
+does anything useful alone, so they are sent together for context. Happy to
+split them if maintainers prefer.
+
+Tested on a Dell Latitude 7320 Detachable, BIOS 1.48.0, kernel 7.0.0. With
+all three applied:
+
+  intel-ipu6 0000:00:05.0: Found supported sensor OVTI5678:00
+  intel-ipu6 0000:00:05.0: Found supported sensor OVTI8856:00
+  intel-ipu6 0000:00:05.0: Connected 2 cameras
+  ov5675 1-0036: ... appears in the media graph
+
+and libcamera captures 2584x1944 at 29.95 fps.
+
+The rear OVTI8856 sensor shares the same PMIC. Its rails are described by the
+same board data, but its reset/powerdown GPIO assignment is not yet known, so
+it is deliberately left out here.
+
+Sahan Nissanka (3):
+  platform/x86: int3472: Add TPS68470 board data for Dell 7320
+    Detachable
+  media: i2c: ov5675: Add OVTI5678 ACPI id
+  media: ipu-bridge: Add sensor configuration for OV5675 (OVTI5678)
+
+ drivers/media/i2c/ov5675.c                    |  7 ++
+ drivers/media/pci/intel/ipu-bridge.c          |  2 +
+ .../x86/intel/int3472/tps68470_board_data.c   | 92 +++++++++++++++++++
+ 3 files changed, 101 insertions(+)
+
+-- 
+2.53.0
+

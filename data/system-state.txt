@@ -1,0 +1,50 @@
+### date
+2026-08-07T23:39:33+10:00
+### kernel
+7.0.0-29-generic
+### dmi
+Dell Inc.
+Latitude 7320 Detachable
+1.48.0
+### acpi camera devices (hid path status)
+INT3471:00 \_SB_.PC00.I2C2.CAM0 0
+INT3472:00 \_SB_.PC00.I2C2.PMIC 0
+INT3472:01 \_SB_.PC00.DSC0 0
+INT3472:02 \_SB_.PC00.DSC1 0
+INT3472:03 \_SB_.PC00.DSC2 0
+INT3472:04 \_SB_.PC00.DSC3 0
+INT3472:05 \_SB_.PC00.DSC4 0
+INT3472:06 \_SB_.PC00.DSC5 0
+INT3472:07 \_SB_.PC00.CLP0 15
+INT3472:08 \_SB_.PC00.CLP1 0
+INT3472:09 \_SB_.PC00.CLP2 0
+INT3472:0a \_SB_.PC00.CLP3 0
+INT3472:0b \_SB_.PC00.CLP4 0
+INT3472:0c \_SB_.PC00.CLP5 0
+INT3474:00 \_SB_.PC00.I2C4.CAM1 0
+OVTI5678:00 \_SB_.PC00.LNK0 15
+OVTI8856:00 \_SB_.PC00.LNK1 15
+### i2c clients
+i2c-0
+i2c-1
+i2c-10
+i2c-11
+i2c-12
+i2c-13
+i2c-14
+i2c-15
+i2c-16
+i2c-17
+i2c-2
+i2c-3
+i2c-4
+i2c-5
+i2c-6
+i2c-7
+i2c-8
+i2c-9
+i2c-INT3472:07
+i2c-WCOM49A5:00
+### int3472/tps68470 kernel messages
+Aug 07 23:22:46 prof-g-y-land-Latitude-7320-Detachable kernel: int3472-tps68470 i2c-INT3472:07: TPS68470 REVID: 0x21
+Aug 07 23:22:46 prof-g-y-land-Latitude-7320-Detachable kernel: int3472-tps68470 i2c-INT3472:07: error -ENODEV: No board-data found for this model

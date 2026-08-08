@@ -1,0 +1,46 @@
+From: Sahan Nissanka <sanoptional@gmail.com>
+Subject: [PATCH] ipa: simple: awb: Remove the hardcoded 4.0 colour gain clamp
+
+The grey-world AWB clamps both colour gains at 4.0. Any sensor whose red
+response is weaker than a quarter of green can therefore never be white
+balanced, and sits permanently short of neutral with a cyan cast.
+
+On an OV5675 (Dell Latitude 7320 Detachable, IPU6, software ISP), pointed at
+lit white paper, raw Bayer read off the sensor with a dark frame subtracted
+gives a native balance of R/G 0.164, B/G 0.665 - so neutral needs a red gain
+of 6.1. The algorithm instead reports:
+
+  IPASoftAwb awb.cpp:103 gain R/B: Vector { 4, 1, 1.54655 }; temperature: 6448
+
+Red is pinned at exactly 4.0 on every frame while blue computes normally at
+1.5465 (against 1.50 predicted), confirming the maths and the black level are
+correct and only the ceiling is at fault. Measured output is R/G 0.372
+against a target of 1.000; webcamtests.com independently reports hue 178
+degrees, i.e. cyan, at 34% saturation on a white wall.
+
+Drop the ceiling and keep only the division-by-zero guard, matching what
+AwbGrey in libipa does.
+
+Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+
+--- a/src/ipa/simple/algorithms/awb.cpp
++++ b/src/ipa/simple/algorithms/awb.cpp
+@@ -95,15 +95,16 @@
+ 	const RGB<uint64_t> sum = stats->sum_.max(offset + minValid) - offset;
+ 
+ 	/*
+-	 * Calculate red and blue gains for AWB.
+-	 * Clamp max gain at 4.0, this also avoids 0 division.
++	 * Calculate red and blue gains for AWB. Guard against division by
++	 * zero, but do not impose a maximum: a hardcoded ceiling leaves
++	 * sensors with a weak red response permanently short of neutral.
+ 	 */
+ 	auto &gains = context.activeState.awb.gains;
+ 	gains = { {
+-		sum.r() <= sum.g() / 4 ? 4.0f : static_cast<float>(sum.g()) / sum.r(),
++		static_cast<float>(sum.g()) / std::max<uint64_t>(sum.r(), 1),
+ 		1.0,
+-		sum.b() <= sum.g() / 4 ? 4.0f : static_cast<float>(sum.g()) / sum.b(),
++		static_cast<float>(sum.g()) / std::max<uint64_t>(sum.b(), 1),
+ 	} };
+ 

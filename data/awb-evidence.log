@@ -1,0 +1,32 @@
+=== libcamera soft-ISP AWB evidence ===
+2026-08-08T17:13:54+10:00
+libcamera: 0.7.0-1ubuntu2
+sensor:    ov5675 (ACPI OVTI5678), Dell Latitude 7320 Detachable, IPU6
+kernel:    7.0.0-29-generic
+
+== A. sensor native, raw Bayer ==
+declared SGRBG10_1X10  -> (0,0)=Gr (0,1)=R (1,0)=B (1,1)=Gb
+black level (exposure=4): 64.7  64.1  64.5  64.7
+signal      (exposure=2016 gain=1024): green above black = 209.4
+raw CFA means before black-level subtraction:
+     273.9      98.3     203.8     274.3
+black-level-corrected CFA means (10-bit):
+  (0,0)     209.2
+  (0,1)      34.2
+  (1,0)     139.3
+  (1,1)     209.6
+  diagonal (0,0)/(1,1) differ by   0.2%   <- should be the greens
+  diagonal (0,1)/(1,0) differ by  75.4%
+     native balance: R/G 0.164  B/G 0.665
+
+== C. does AwbEnable=false + ColourGains do anything? ==
+  colour-gains=<2.0,1.0>  ->  R/G 0.3910  B/G 0.9368
+  colour-gains=<4.0,1.0>  ->  R/G 0.3876  B/G 0.9371
+  colour-gains=<8.0,1.0>  ->  R/G 0.3897  B/G 0.9367
+  (red gain varied 4x; if the ratios do not move, the control is ignored)
+
+== B. after the soft ISP, AWB enabled (default) ==
+  R/G 0.3908  B/G 0.9376
+  (a grey-world AWB targeting unity should reach R/G = B/G = 1.000)
+
+== restarting relay ==

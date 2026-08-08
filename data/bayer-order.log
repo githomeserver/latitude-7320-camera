@@ -1,0 +1,19 @@
+sensor   ov5675 1-0036  /dev/v4l-subdev8
+capture  /dev/video49
+  configuring ov5675 1-0036:0 -> Intel IPU6 CSI2 6:1 -> Intel IPU6 ISYS Capture 48  SGRBG10_1X10/1296x972
+format   1296x972 BA10 stride=2624
+declared SGRBG10_1X10  -> (0,0)=Gr (0,1)=R (1,0)=B (1,1)=Gb
+
+raw CFA position means (10-bit):
+  (0,0)     237.2
+  (0,1)      85.8
+  (1,0)     171.9
+  (1,1)     237.9
+
+  diagonal (0,0)/(1,1) differ by   0.3%   <- should be the greens
+  diagonal (0,1)/(1,0) differ by  50.1%
+
+  => matches the declared GRBG phase; Bayer order is correct.
+     native balance: R/G 0.361  B/G 0.724
+     AWB has to correct these to ~1.0; if the output still
+     shows the same ratios, AWB is not being applied.

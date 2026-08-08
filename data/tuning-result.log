@@ -1,0 +1,19 @@
+=== ov5675 tuning file result ===
+2026-08-08T18:16:50+10:00
+
+== before (no tuning file, black level guessed) ==
+  R/G 0.5719  B/G 0.9069
+
+== installing ==
+  -> /usr/share/libcamera/ipa/simple/ov5675.yaml
+  -> /usr/local/share/libcamera/ipa/simple/ov5675.yaml
+           blackLevel: 4122
+
+== after (black level pinned to 4122 >> 8 = 16) ==
+  R/G 0.5624  B/G 0.9052
+
+  target is R/G = B/G = 1.000
+  predicted from the raw measurements: 1.005 / 0.999
+
+== is libcamera actually loading it? ==
+  NO - still reporting ov5675.yaml not found

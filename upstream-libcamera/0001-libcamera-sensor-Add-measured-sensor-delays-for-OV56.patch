@@ -1,0 +1,72 @@
+From: Sahan Nissanka <sanoptional@gmail.com>
+Date: Sat, 8 Aug 2026 11:05:00 +1000
+Subject: [PATCH] libcamera: sensor: Add measured sensor delays for OV5675
+
+The ov5675 entry has carried an empty sensorDelays since it was added, so
+libcamera falls back to its defaults and logs:
+
+  WARN CameraSensor camera_sensor_legacy.cpp:502 'ov5675 1-0036':
+  No sensor delays found in static properties. Assuming unverified defaults.
+
+Measure them instead of guessing.
+
+Method: stream raw Bayer straight off the sensor via V4L2, bypassing
+libcamera entirely - libcamera applies controls using the very delay model
+being measured, so measuring through it would be circular. With the pipeline
+configured by hand (sensor -> CSI-2 -> capture node), step one control
+immediately after dequeuing a frame and find the first subsequent frame that
+changes. Exposure and gain are observed as a step in mean brightness, VBLANK
+as a step in the interval between buffer timestamps.
+
+Nine runs per control on an OV5675 (Dell Latitude 7320 Detachable, IPU6,
+1296x972 SGRBG10, 8 buffers). Runs where the buffer sequence numbers were not
+consecutive were discarded, since a dropped frame invalidates the counting.
+
+  exposure       8/9 runs agree,  32.4 -> 36.4 mean
+  analogue_gain  9/9 runs agree,  36.4 -> 72.7 mean
+  vblank         9/9 runs agree,  33.4 -> 85.1 ms frame interval
+
+In every case the change first appeared two frames after the one in flight
+when the control was written: the write is issued microseconds after
+dequeuing frame S, frame S+1 was already latched during S's readout, and the
+change lands in S+2. That is a delay of 2 by the definition used here.
+
+The VBLANK result also checks out arithmetically, which is a useful
+cross-check on the whole measurement chain. With HTS = 1296 + 1704 = 3000 and
+pixel_rate = 180 MHz the line time is 16.67 us, so 972 + 1048 = 2020 lines is
+33.7 ms and 972 + 4192 = 5164 lines is 86.1 ms, against 33.4 ms and 85.1 ms
+measured - within about 1%%.
+
+hblankDelay was not measured: V4L2_CID_HBLANK is read-only on this sensor
+(min = max = 1704), so it can never be written and the delay is unobservable.
+It is set to 2 for consistency with the rest of this file rather than left at
+zero; since the control cannot change, the value is never used.
+
+These values match every other OmniVision sensor in this file that has
+measured delays (ov5647, ov7251, ov9281, ov08d10, ov64a40 are all 2/2/2/2),
+which is reassuring but was not assumed - the measurement was taken first.
+
+Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+---
+ src/libcamera/sensor/camera_sensor_properties.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/libcamera/sensor/camera_sensor_properties.cpp b/src/libcamera/sensor/camera_sensor_properties.cpp
+index 1111111..2222222 100644
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -383,8 +383,13 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
+ 		{ "ov5675", {
+ 			.unitCellSize = { 1120, 1120 },
+ 			.testPatternModes = {
+ 				{ controls::draft::TestPatternModeOff, 0 },
+ 				{ controls::draft::TestPatternModeColorBars, 1 },
+ 			},
+-			.sensorDelays = { },
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2,
++			},
+ 		} },

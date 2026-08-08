@@ -1,0 +1,48 @@
+From b842397126a937259ed3ac07a19d4439d2c02031 Mon Sep 17 00:00:00 2001
+From: Sahan Nissanka <sanoptional@gmail.com>
+Date: Sat, 8 Aug 2026 18:52:40 +1000
+Subject: [PATCH 2/3] media: i2c: ov5675: Add OVTI5678 ACPI id
+
+The front camera of the Dell Latitude 7320 Detachable is described in
+ACPI as OVTI5678, and no driver has ever claimed that id. The part is an
+OV5675: once powered it reports chip id 0x005675 at register 0x300a,
+which is exactly what ov5675_identify_module() expects.
+
+  ov5675 i2c-OVTI5678:00: chip id at 0x300a reads 0x005675
+    reg 0x300a = 0x00  reg 0x300b = 0x56  reg 0x300c = 0x75
+
+The two other values this driver is sensitive to were read from the
+machine's ACPI SSDB before the sensor was ever powered, and both agree:
+L0NL = 2 data lanes (OV5675_DATA_LANES) and L0CK = 19200000 Hz
+(OV5675_XVCLK_19_2). The resolution matches too - the panel advertises a
+5MP front camera and this driver's native mode is 2592x1944.
+
+With this id added the sensor binds and streams unmodified: libcamera
+lists it and capture runs at 2584x1944, 29.95 fps.
+
+Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+---
+ drivers/media/i2c/ov5675.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/media/i2c/ov5675.c b/drivers/media/i2c/ov5675.c
+index ea26df3..99dbf53 100644
+--- a/drivers/media/i2c/ov5675.c
++++ b/drivers/media/i2c/ov5675.c
+@@ -1355,6 +1355,13 @@ static const struct dev_pm_ops ov5675_pm_ops = {
+ #ifdef CONFIG_ACPI
+ static const struct acpi_device_id ov5675_acpi_ids[] = {
+ 	{"OVTI5675"},
++	/*
++	 * The front sensor of the Dell Latitude 7320 Detachable is described
++	 * as OVTI5678 in ACPI, but the part reports chip id 0x005675 and its
++	 * SSDB agrees with this driver on both other values that matter:
++	 * 2 CSI-2 data lanes and a 19.2 MHz external clock.
++	 */
++	{"OVTI5678"},
+ 	{}
+ };
+ 
+-- 
+2.53.0
+
