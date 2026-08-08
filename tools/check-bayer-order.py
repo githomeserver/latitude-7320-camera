@@ -34,8 +34,15 @@ sys.modules["msd"] = msd
 spec.loader.exec_module(msd)
 
 
-def cfa_means(cap, rows=240, cols=320):
-    """Mean of each of the four CFA positions, from the raw 16-bit buffer."""
+def cfa_means(cap, rows=240, cols=320, centre=1.0):
+    """Mean of each of the four CFA positions, from the raw 16-bit buffer.
+
+    centre < 1.0 restricts sampling to that fraction of the frame around the
+    middle. The lens vignettes hard - the corners are close to black - so on a
+    dim scene the edges contribute mostly noise and drag the signal down.
+    Ratios between positions are unaffected either way, since all four are
+    interleaved across the same area, but the SNR is much better in the middle.
+    """
     import fcntl
     b = msd.Buffer(type=msd.BUF_TYPE_VIDEO_CAPTURE, memory=msd.MEMORY_MMAP)
     fcntl.ioctl(cap.fd, msd.VIDIOC_DQBUF, b)
@@ -45,10 +52,16 @@ def cfa_means(cap, rows=240, cols=320):
     counts = [0, 0, 0, 0]
     ystep = max(2, (cap.h // rows) & ~1)     # keep steps even so the phase holds
     xstep = max(2, (cap.w // cols) & ~1)
-    for y in range(0, cap.h - 1, ystep):
+    # Keep the origin even too, or the CFA phase shifts and the four positions
+    # get relabelled.
+    y0 = (int(cap.h * (1 - centre) / 2)) & ~1
+    x0 = (int(cap.w * (1 - centre) / 2)) & ~1
+    y1 = cap.h - y0
+    x1 = cap.w - x0
+    for y in range(y0, y1 - 1, ystep):
         base0 = y * stride
         base1 = (y + 1) * stride
-        for x in range(0, cap.w - 1, xstep):
+        for x in range(x0, x1 - 1, xstep):
             o0 = base0 + x * 2
             o1 = base1 + x * 2
             # little-endian u16, 10 bits significant

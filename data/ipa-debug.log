@@ -1,35 +1,35 @@
 === libcamera soft IPA debug ===
-2026-08-08T18:20:48+10:00
+2026-08-08T22:21:16+10:00
 tuning file present: yes
 
 == black level ==
 
 == awb / gains ==
-  [7:59:46.214666887] [25813]  INFO IPASoft soft_simple.cpp:258 IPASoft: Exposure 4-2016, gain 1-15.9922 (0.149922)
-  [7:59:46.408654494] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 5.80186, 1, 1.53987  }; temperature: 6754
-  [7:59:46.532038263] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.02, 1, 1.54475  }; temperature: 6754
-  [7:59:46.665656914] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.00892, 1, 1.54531  }; temperature: 6751
-  [7:59:46.799077836] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.00449, 1, 1.54591  }; temperature: 6748
-  [7:59:46.932678422] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01477, 1, 1.54506  }; temperature: 6752
-  [7:59:47.066485291] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01442, 1, 1.54609  }; temperature: 6748
-  [7:59:47.200124931] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01323, 1, 1.54612  }; temperature: 6747
-  [7:59:47.333557791] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01416, 1, 1.54527  }; temperature: 6751
-  [7:59:47.467091205] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01215, 1, 1.54529  }; temperature: 6751
-  [7:59:47.600368687] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01225, 1, 1.54557  }; temperature: 6750
-  [7:59:47.734052683] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.00982, 1, 1.54487  }; temperature: 6753
-  [7:59:47.867690573] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01234, 1, 1.54545  }; temperature: 6750
-  [7:59:48.001082238] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01459, 1, 1.54575  }; temperature: 6749
-  [7:59:48.134356567] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01595, 1, 1.54629  }; temperature: 6747
-  [7:59:48.268378705] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01506, 1, 1.54525  }; temperature: 6752
-  [7:59:48.401928119] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01535, 1, 1.54564  }; temperature: 6750
-  [7:59:48.535478015] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01506, 1, 1.54579  }; temperature: 6749
-  [7:59:48.669031789] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01624, 1, 1.54538  }; temperature: 6751
-  [7:59:48.802537473] [25816] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 6.01811, 1, 1.54584  }; temperature: 6749
+  [0:05:27.528493523] [7775]  INFO IPASoft soft_simple.cpp:258 IPASoft: Exposure 4-2016, gain 1-15.9922 (0.149922)
+  [0:05:27.728073784] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46356, 1, 4.90319  }; temperature: 3139
+  [0:05:27.850883565] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46319, 1, 4.89546  }; temperature: 3140
+  [0:05:27.985156350] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46274, 1, 4.89516  }; temperature: 3139
+  [0:05:28.118860589] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46283, 1, 4.89736  }; temperature: 3139
+  [0:05:28.252349964] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46313, 1, 4.89507  }; temperature: 3140
+  [0:05:28.385830766] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46292, 1, 4.89702  }; temperature: 3139
+  [0:05:28.519590207] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46258, 1, 4.89664  }; temperature: 3139
+  [0:05:28.653218792] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46252, 1, 4.8973  }; temperature: 3139
+  [0:05:28.786729458] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46317, 1, 4.89802  }; temperature: 3139
+  [0:05:28.920153362] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.463, 1, 4.89876  }; temperature: 3139
+  [0:05:29.053384176] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46251, 1, 4.89675  }; temperature: 3139
+  [0:05:29.187285644] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46316, 1, 4.89851  }; temperature: 3139
+  [0:05:29.320279893] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46303, 1, 4.89592  }; temperature: 3139
+  [0:05:29.454319648] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46316, 1, 4.89709  }; temperature: 3139
+  [0:05:29.587883691] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46248, 1, 4.89545  }; temperature: 3139
+  [0:05:29.721183279] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46325, 1, 4.89882  }; temperature: 3139
+  [0:05:29.855102208] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46234, 1, 4.89377  }; temperature: 3139
+  [0:05:29.988490222] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46298, 1, 4.90073  }; temperature: 3139
+  [0:05:30.121957432] [7778] DEBUG IPASoftAwb awb.cpp:104 gain R/B: Vector { 1.46287, 1, 4.89878  }; temperature: 3139
 
 == agc / exposure (context) ==
-  [7:59:46.214666887] [25813]  INFO IPASoft soft_simple.cpp:258 IPASoft: Exposure 4-2016, gain 1-15.9922 (0.149922)
+  [0:05:27.528493523] [7775]  INFO IPASoft soft_simple.cpp:258 IPASoft: Exposure 4-2016, gain 1-15.9922 (0.149922)
 
 == which log categories actually appeared ==
 
 == any errors/warnings ==
-  [7:59:46.212255222] [25813]  WARN CameraSensor camera_sensor_legacy.cpp:502 'ov5675 1-0036': No sensor delays found in static properties. Assuming unverified defaults.
+  [0:05:27.526568112] [7775]  WARN CameraSensor camera_sensor_legacy.cpp:502 'ov5675 1-0036': No sensor delays found in static properties. Assuming unverified defaults.

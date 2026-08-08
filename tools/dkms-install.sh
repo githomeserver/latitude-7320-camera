@@ -18,9 +18,12 @@ set -eu
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 NAME="camera-dell7320"
-VER="0.2"
+VER="0.3"
 DEST="/usr/src/$NAME-$VER"
-OLD="int3472-dell7320"
+# Every earlier package/version, so a rebuild never trips over
+# "DKMS tree already contains" - including the same version, which is
+# what happens when you rebuild without bumping.
+OLD_PKGS="int3472-dell7320/0.1 camera-dell7320/0.2 camera-dell7320/0.3"
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: must run as root (sudo $0)" >&2; exit 1; }
 
@@ -32,16 +35,19 @@ remove_pkg() {
 
 if [ "${1:-install}" = "remove" ]; then
     echo "== removing =="
-    remove_pkg "$NAME" "$VER"
-    remove_pkg "$OLD" "0.1"
+    for pv in $OLD_PKGS; do remove_pkg "${pv%%/*}" "${pv##*/}"; done
     depmod -a
     echo "   removed. Reboot to go back to the in-tree modules."
     exit 0
 fi
 
-# The 0.1 package only carried the int3472 module; this supersedes it.
-echo "== dropping superseded $OLD =="
-remove_pkg "$OLD" "0.1"
+echo "== dropping any previous build =="
+for pv in $OLD_PKGS; do
+    if dkms status -m "${pv%%/*}" -v "${pv##*/}" 2>/dev/null | grep -q .; then
+        echo "   removing $pv"
+        remove_pkg "${pv%%/*}" "${pv##*/}"
+    fi
+done
 
 echo
 echo "== staging to $DEST =="

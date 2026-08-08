@@ -1,13 +1,14 @@
 #!/bin/bash
 # Build both out-of-tree modules:
-#   module/  -> intel_skl_int3472_tps68470  (TPS68470 board data, Phase A)
-#   sensor/  -> ov5678                      (sensor driver, Phase C)
+#   module/          -> intel_skl_int3472_tps68470  (TPS68470 board data)
+#   sensor-ov5675/   -> ov5675   (+OVTI5678 acpi id, +GBRG cfa phase)
+#   ipu-bridge/      -> ipu-bridge  (+OVTI5678 sensor config)
 #
 # Kbuild cannot handle spaces in M=<path> and this project lives under
 # "Claude Code", so each is staged into a spaceless directory first. The
 # directories under the project stay the single source of truth.
 #
-# Usage: ./build.sh [int3472|sensor]      (default: both)
+# Usage: ./build.sh [int3472|ov5675|ipu-bridge]   (default: all)
 
 set -eu
 
@@ -34,12 +35,16 @@ build_one() {
     echo
 }
 
-what="${1:-both}"
+what="${1:-all}"
 
-if [ "$what" = "both" ] || [ "$what" = "int3472" ]; then
+if [ "$what" = "all" ] || [ "$what" = "int3472" ]; then
     build_one "$HERE/../module" "$BASE/ov5678-build" intel_skl_int3472_tps68470
 fi
 
-if [ "$what" = "both" ] || [ "$what" = "sensor" ]; then
-    build_one "$HERE/../sensor" "$BASE/ov5678-sensor-build" ov5678
+if [ "$what" = "all" ] || [ "$what" = "ov5675" ]; then
+    build_one "$HERE/../sensor-ov5675" "$BASE/ov5678-sensor-ov5675-build" ov5675
+fi
+
+if [ "$what" = "all" ] || [ "$what" = "ipu-bridge" ]; then
+    build_one "$HERE/../ipu-bridge" "$BASE/ov5678-ipu-bridge-build" ipu-bridge
 fi

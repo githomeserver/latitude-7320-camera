@@ -863,7 +863,28 @@ static void ov5675_update_pad_format(const struct ov5675_mode *mode,
 {
 	fmt->width = mode->width;
 	fmt->height = mode->height;
-	fmt->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+/*
+ * LOCAL CHANGE for the Dell Latitude 7320 Detachable.
+ *
+ * The module is mounted such that the CFA phase is GBRG, not the GRBG this
+ * driver declares. Rotating a GRBG array by 180 degrees - which is how
+ * front-facing modules are commonly fitted - gives GBRG:
+ *
+ *      G R                G B
+ *      B G   --180-->     R G
+ *
+ * Verified by capturing one raw frame and demosaicing it both ways: a
+ * known-red Kmart logo renders red under GBRG and blue under GRBG. Corroborated
+ * by the (1,0) CFA position responding 2.26x more to a red object than a blue
+ * one, and by the native channel balance on white paper only making sense for
+ * the room's illuminant when read as GBRG.
+ *
+ * Not upstreamable as-is: changing the code unconditionally would break every
+ * other ov5675 whose module is mounted the other way up. Upstream this needs to
+ * key off something board-specific, and the driver should also flip the code
+ * when H/V flip are applied, which it currently does not.
+ */
+	fmt->code = MEDIA_BUS_FMT_SGBRG10_1X10;
 	fmt->field = V4L2_FIELD_NONE;
 }
 
@@ -1106,7 +1127,7 @@ static int ov5675_enum_mbus_code(struct v4l2_subdev *sd,
 	if (code->index > 0)
 		return -EINVAL;
 
-	code->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	code->code = MEDIA_BUS_FMT_SGBRG10_1X10;
 
 	return 0;
 }
@@ -1118,7 +1139,7 @@ static int ov5675_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->index >= ARRAY_SIZE(supported_modes))
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+	if (fse->code != MEDIA_BUS_FMT_SGBRG10_1X10)
 		return -EINVAL;
 
 	fse->min_width = supported_modes[fse->index].width;

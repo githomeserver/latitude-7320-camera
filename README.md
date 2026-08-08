@@ -34,16 +34,26 @@ years.
 
 ## Status
 
-Working: 1280×720 at ~28 fps in Firefox, Chromium, and anything else that opens
-`/dev/video0`. Colour is white-balanced correctly. Colour *accuracy* is still
-approximate — see [Known limitations](#known-limitations).
+Working: 1280x720 at ~28 fps in Firefox, Chromium, and anything else that opens
+`/dev/video0`. White balance is correct and the estimated colour temperature is
+physically sensible for the room.
 
-The rear OV8856 is **not** addressed here.
+| | before | after |
+|---|---|---|
+| works at all | no driver claimed the ACPI id | 1280x720, ~28 fps |
+| white balance (linear R/G) | 0.372 | 1.009 |
+| colour cast | 34% saturation on white paper | ~6% |
+| colour temperature | 6752 K indoors (nonsense) | 3139 K (correct) |
+| red and blue | transposed | correct |
+
+Saturation is still low - see [Known limitations](#known-limitations). The rear
+OV8856 is **not** addressed here.
 
 ## What was actually broken
 
-Five independent faults, in three different layers. Each had to be fixed
-before the next became visible, which is why this took a while.
+Six independent faults across three layers. Each had to be fixed before the
+next became visible, which is why this took a while - and why the diagnostic
+scripts in `tools/` may be more useful to you than the patches.
 
 ### 1. IPU6 firmware never loaded (kernel)
 
@@ -106,7 +116,37 @@ it runs at 28.
 
 → `tools/fix-browser-camera.sh`, `tools/tune-relay-pipeline.sh`
 
-### 5. A strong cyan cast (libcamera)
+### 5. The CFA phase is GBRG, not the GRBG the driver declares (kernel)
+
+`ov5675.c` hardcodes `MEDIA_BUS_FMT_SGRBG10_1X10` in three places. On this board
+red and blue are transposed, consistent with the module being mounted 180
+degrees - rotating a GRBG array by 180 gives GBRG:
+
+```
+G R                G B
+B G   --180-->     R G
+```
+
+Proven by capturing one raw frame and demosaicing it both ways
+(`tools/demosaic-both-ways.sh`): a known-red Kmart logo renders red under GBRG
+and blue under GRBG. After patching, two independent things fell into place -
+the AWB gains mirrored (red 6.01 -> 1.46, blue 1.54 -> 4.90) and the estimated
+colour temperature went from 6752 K to **3139 K**, i.e. from implausible
+daylight to correct warm-indoor.
+
+**A warning for anyone testing this.** The obvious check - confirming the two
+green CFA positions agree - *cannot detect this fault*. GRBG and GBRG both put
+greens at (0,0) and (1,1), so that test only rules out RGGB/BGGR. An R/B swap is
+also invisible to grey-world AWB, because balancing to neutral works whichever
+way the channels are labelled. Greys look perfect while every colour is wrong.
+It cost a lot of time here.
+
+Not upstreamable as-is: changing the code unconditionally would break every
+ov5675 mounted the other way up. Upstream this needs a board-specific key. There
+is also a genuine latent bug alongside it - the driver never adjusts the mbus
+code when H/V flip are applied.
+
+### 6. A strong cyan cast (libcamera)
 
 Three further defects, each masking the next. On lit white paper, in **linear**
 light (undo the sRGB transfer before averaging — comparing gamma-encoded ratios
@@ -171,18 +211,44 @@ Every script takes `revert`.
 
 ## Known limitations
 
-- **Colour accuracy.** White balance is correct; there is no colour correction
-  matrix, so saturated colours render washed out and hue-shifted. A CCM would
-  fix it and none has been measured.
-- **`LIBCAMERA_SOFTISP_MODE=cpu` costs frame rate.** Relay CPU goes from ~36% to
-  ~45%. Measured frame rate was inconsistent between runs (28 and 17.6 fps) and
-  has not been pinned down.
-- **The rear OV8856 does not work.** Its rails are covered by the same board
-  data, but its reset/powerdown GPIOs are unknown, and pins 3 and 4 belong to
-  the front sensor. The `ov8856` driver Ubuntu ships also does no power
-  management at all on ACPI.
-- **`tools/hide-raw-ipu6-nodes.sh` makes `cam` need sudo**, because it takes the
-  raw nodes out of the `video` group. That is the trade for a clean camera list.
+**Saturation, and it is a sensor limit not a software one.** Colours render
+undersaturated. A colour correction matrix would normally fix that, and it was
+attempted and abandoned - deliberately. Red and green fit cleanly (~1.5 diagonal,
+modest negative off-diagonals) but the blue row is unfittable:
+
+```
+patch            target B   camera B
+yellow                 31        236     <- least blue subject, highest blue reading
+blue flower           177        181
+blue sky              157        177
+cyan                  161        165
+```
+
+Target blue spans 6x, camera blue only 2.4x, and the two are anti-correlated.
+With native `B/G 0.163` and a 4.9x AWB gain, blue is dominated by crosstalk and
+flare rather than blue light, so there is no relationship for least squares to
+find. Excluding shadow-corrupted dark patches made the blue row *worse*
+(-0.08 -> -0.43), confirming it is not a shadow-offset problem. The tools are
+kept (`tools/solve-ccm.py`, `tools/make-ccm-target.py`) but do not expect a
+usable matrix from this sensor without better equipment than a tablet screen.
+
+**`LIBCAMERA_SOFTISP_MODE=cpu` costs frame rate.** Relay CPU goes from ~36% to
+~45%. Measured frame rate was inconsistent between runs (28 and 17.6 fps) and
+has not been pinned down. `csi2-6 Transfer FIFO overflow` messages appear under
+this load - dropped frames, not corrupted ones.
+
+**The rear OV8856 does not work.** Its rails are covered by the same board data,
+but its reset/powerdown GPIOs are unknown, and pins 3 and 4 belong to the front
+sensor. The `ov8856` driver Ubuntu ships also does no power management at all on
+ACPI, and mainline's skips regulators and GPIOs when `is_acpi_node()`.
+
+**`tools/hide-raw-ipu6-nodes.sh` makes `cam` need sudo**, because it takes the
+raw nodes out of the `video` group. That is the trade for a clean camera list;
+`cam` and `check-camera.sh` will report permission errors without it.
+
+**Lens shading is uncorrected.** Corners fall off noticeably and per-channel
+falloff differs, which is the likely source of the residual ~11% blue excess
+between centre-weighted and full-frame measurements.
 
 ## Diagnostics
 
@@ -199,6 +265,9 @@ differs:
 | `dump-ipa-debug.sh` | read libcamera's own computed gains rather than inferring them |
 | `check-colour.sh` | current colour balance, no root needed |
 | `diagnose-fps.sh` | isolate frame-rate loss between libcamera and the relay |
+| `demosaic-both-ways.sh` | capture one raw frame, demosaic as GRBG and GBRG, compare |
+| `check-rb-swap-raw.sh` | per-CFA-position response to a coloured subject, raw |
+| `solve-ccm.py` | fit a colour correction matrix from a displayed target |
 
 Two traps worth knowing:
 
@@ -206,8 +275,11 @@ Two traps worth knowing:
   `CLDB` (32 B) survives; `SSDB` (108 B) is silently cut at offset 0x29, losing
   MCLK and the control-logic id. Read the root-scope NVS scalars individually.
 - **Subtract the black level** before computing channel ratios from raw Bayer.
-  The pedestal is 64/1023 here, and in dim light it dominates the red channel
-  entirely.
+  The pedestal is 64/1023 here, and in dim light it dominates entirely.
+- **Do not test colour through the processed output.** Grey-world AWB neutralises
+  any uniform colour that fills the frame, so a red screen photographed
+  full-frame comes out grey. That is the algorithm working, not the camera
+  failing. Use raw Bayer with fixed exposure, or a mixed scene.
 
 Measurement logs from this machine are in `data/`.
 
@@ -223,6 +295,7 @@ Nothing merged yet.
 | `libcamera-patch/0001-*` AWB gain clamp | libcamera-devel |
 | `libcamera/ov5675.yaml` black level | libcamera-devel |
 | `upstream-libcamera/0001-*` sensor delays | libcamera-devel |
+| GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable as-is** - needs a board-specific key |
 
 `upstream-libcamera/AWB-BUG-REPORT.md` writes up all three libcamera defects
 with measurements.
