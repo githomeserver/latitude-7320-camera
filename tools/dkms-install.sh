@@ -10,8 +10,8 @@
 # per boot (acpi_dev_clear_dependencies frees the _DEP entries), and ipu-bridge
 # only builds the fwnode graph during the ipu6 probe.
 #
-# Run as root:  sudo ./dkms-install.sh          install + build + depmod
-#               sudo ./dkms-install.sh remove   undo, back to the in-tree modules
+# Run as root:  sudo ./dkms-install.sh                  install + build + depmod
+#               sudo ./dkms-install.sh remove|revert   undo, back to in-tree modules
 
 set -eu
 
@@ -33,7 +33,15 @@ remove_pkg() {
     rm -rf "/usr/src/$n-$v"
 }
 
-if [ "${1:-install}" = "remove" ]; then
+# Accept "revert" too: every other script in tools/ spells it that way, and
+# silently falling through to a reinstall is the wrong way to handle a typo.
+case "${1:-install}" in
+    install|remove|revert) ;;
+    *) echo "ERROR: unknown argument '$1' (expected: remove, revert, or nothing)" >&2
+       exit 1 ;;
+esac
+
+if [ "${1:-install}" != "install" ]; then
     echo "== removing =="
     for pv in $OLD_PKGS; do remove_pkg "${pv%%/*}" "${pv##*/}"; done
     depmod -a

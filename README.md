@@ -46,6 +46,9 @@ physically sensible for the room.
 | colour temperature | 6752 K indoors (nonsense) | 3139 K (correct) |
 | red and blue | transposed | correct |
 
+Those are single measurements on lit white paper; they move with the scene. See
+[What step 5 should print](#what-step-5-should-print) for the ranges to expect.
+
 Saturation is still low - see [Known limitations](#known-limitations). The rear
 OV8856 is **not** addressed here.
 
@@ -179,7 +182,22 @@ stock libcamera 0.7.0             R/G 0.372   B/G 0.897    saturation 34%
 
 ## Installing
 
-Ubuntu 26.04, kernel 7.0.0-29. Adapt as needed.
+Ubuntu 26.04, kernel 7.0.0-29, libcamera 0.7.0-1ubuntu2. Adapt as needed.
+
+`build-libcamera.sh` builds whatever `apt-get source libcamera` gives you, so it
+tracks your distro rather than pinning a release. It checks for the clamp before
+patching and tells you if the source has moved on — if the clamp is already gone
+in your version, skip the patch and keep the rest of step 4.
+
+Prerequisites — all in the Ubuntu archive, no OEM PPA required:
+
+```sh
+sudo apt install dkms build-essential "linux-headers-$(uname -r)" \
+                 v4l2-relayd v4l2loopback-dkms v4l-utils \
+                 gstreamer1.0-plugins-good python3-pil
+```
+
+`build-libcamera.sh deps` installs its own build dependencies on top of these.
 
 ```sh
 # 1. kernel modules (board data + ov5675 ACPI id + ipu-bridge entry) via DKMS
@@ -203,11 +221,63 @@ sudo tools/build-libcamera.sh install
 sudo tools/install-tuning.sh
 sudo tools/try-cpu-isp.sh cpu
 
+# 5. verify colour
+tools/check-colour.sh
+
 # optional: hide the 64 dead ipu6 entries from the browser's camera list
 sudo tools/hide-raw-ipu6-nodes.sh
 ```
 
-Every script takes `revert`.
+Steps 1 and 4 are both required to clear the green/cyan cast. Step 1 fixes the
+red/blue transposition, step 4 fixes the three libcamera defects; either alone
+still looks wrong, which is what made this confusing to diagnose.
+
+### What step 5 should print
+
+Point the camera at a normally lit scene, not a coloured surface filling the
+frame:
+
+```
+  linear   R/G 0.99   B/G 1.11     (1.000 = neutral)
+  approx saturation 7.8%
+```
+
+These are scene-dependent — expect **R/G and B/G within roughly 0.9–1.15** and
+**saturation under about 10%**. Exact agreement with the numbers above is not
+the goal, and chasing it will mislead you. What matters is which failure you are
+looking at if it is out:
+
+| symptom | cause | fix |
+|---|---|---|
+| `R/G` around 0.3–0.4, strong cyan cast | full step 4 not applied | re-run step 4 in order |
+| `R/G` around 0.55, cast reduced but present | patched libcamera live, GPU debayer still active | `sudo tools/try-cpu-isp.sh cpu` |
+| balance neutral but colours plainly wrong (red objects look blue) | GBRG CFA patch not loaded | check `modinfo -n ov5675` resolves to `updates/dkms` |
+| saturation above ~30% | nothing from step 4 is in effect | check `systemctl show v4l2-relayd@default -p Environment` |
+
+Note the third row: **white balance can read perfectly neutral while every
+colour is wrong.** Grey-world AWB balances to grey whichever way the channels
+are labelled, so `check-colour.sh` passing does not by itself prove the CFA
+phase is right. Confirm that separately with `tools/demosaic-both-ways.sh`.
+
+## Uninstalling
+
+Not every script uses the same word, so spelling it out:
+
+```sh
+sudo tools/dkms-install.sh revert         # or: remove
+sudo tools/build-libcamera.sh revert
+sudo tools/install-tuning.sh revert
+sudo tools/fix-browser-camera.sh revert
+sudo tools/hide-raw-ipu6-nodes.sh revert
+sudo tools/try-cpu-isp.sh gpu             # no 'revert' - back to the default
+sudo rm /etc/modprobe.d/int3472-dell7320.conf
+sudo dracut --force --kver "$(uname -r)"
+sudo reboot
+```
+
+`tune-relay-pipeline.sh` has no undo; `fix-browser-camera.sh revert` restores
+the relay configuration it edited. The `/usr/local` libcamera build is left on
+disk by `build-libcamera.sh revert` — remove it by hand if you want the space.
 
 ## Known limitations
 
@@ -267,7 +337,18 @@ differs:
 | `diagnose-fps.sh` | isolate frame-rate loss between libcamera and the relay |
 | `demosaic-both-ways.sh` | capture one raw frame, demosaic as GRBG and GBRG, compare |
 | `check-rb-swap-raw.sh` | per-CFA-position response to a coloured subject, raw |
-| `solve-ccm.py` | fit a colour correction matrix from a displayed target |
+| `solve-ccm.py`, `make-ccm-target.py` | fit a colour correction matrix from a displayed target |
+| `check-boot.sh` | IPU6 firmware timing and probe order after a reboot |
+| `check-camera.sh` | end-to-end state: modules, i2c clients, media graph, nodes |
+| `test-sensor.sh`, `test-load.sh` | load the modules and read the chip id by hand |
+| `retry-regulator.sh` | recover a wedged TPS68470 without a reboot |
+| `build.sh` | build the three modules out-of-tree, without DKMS |
+| `upstream-regen.sh` | regenerate the patches in `kernel-patches/` |
+
+Two scripts that were used along the way are in `attic/`, not `tools/`, because
+they gave answers that turned out to be wrong: `check-rb-swap.sh` (tests through
+the processed output — see the third trap below) and `calibrate-colour.sh`
+(pins `ColourGains`, which the soft ISP ignores). Neither is worth running.
 
 Two traps worth knowing:
 
