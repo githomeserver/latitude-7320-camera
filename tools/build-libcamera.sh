@@ -83,6 +83,42 @@ build)
     fi
 
     echo
+    echo "== applying the measured ov5675 sensor delays =="
+    # Done as an in-place edit rather than with upstream-libcamera/0001-*.patch:
+    # that patch is generated against the upstream git tree, where the ov5675
+    # entry has no sensorDelays member at all, while Ubuntu's 0.7.0 source
+    # already carries an empty ".sensorDelays = { }". The measured values are
+    # the same either way - see tools/measure-sensor-delays.sh.
+    python3 - <<'PY'
+import re, os, stat, sys
+f = "src/libcamera/sensor/camera_sensor_properties.cpp"
+s = open(f).read()
+m = re.search(r'\{ "ov5675", \{.*?\n\t\t\} \},', s, re.S)
+if not m:
+    sys.exit("   ERROR: could not find the ov5675 entry")
+blk = m.group(0)
+if "exposureDelay" in blk:
+    print("   already applied")
+    sys.exit(0)
+new = blk.replace(
+    "\t\t\t.sensorDelays = { },",
+    "\t\t\t.sensorDelays = {\n"
+    "\t\t\t\t.exposureDelay = 2,\n"
+    "\t\t\t\t.gainDelay = 2,\n"
+    "\t\t\t\t.vblankDelay = 2,\n"
+    "\t\t\t\t.hblankDelay = 2,\n"
+    "\t\t\t},")
+if new == blk:
+    sys.exit("   ERROR: ov5675 entry has no '.sensorDelays = { }' to replace")
+try:                                             # apt source ships it read-only
+    os.chmod(f, os.stat(f).st_mode | stat.S_IWUSR)
+except PermissionError:
+    pass                                         # root can write 0644 regardless
+open(f, "w").write(s.replace(blk, new))
+print("   applied: exposure/gain/vblank/hblank = 2 frames")
+PY
+
+    echo
     echo "== configuring (soft ISP + simple pipeline only, to keep it quick) =="
     rm -rf build
     meson setup build \
