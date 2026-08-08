@@ -45,16 +45,18 @@ physically sensible for the room.
 | colour cast | 34% saturation on white paper | ~6% |
 | colour temperature | 6752 K indoors (nonsense) | 3139 K (correct) |
 | red and blue | transposed | correct |
+| black floor on a lit scene | `(70, 50, 144)` violet | `(28, 31, 5)` |
+| debayer | CPU, ~13 ms/frame with a CCM | GPU, no stutter |
 
 Those are single measurements on lit white paper; they move with the scene. See
-[What step 5 should print](#what-step-5-should-print) for the ranges to expect.
+[What step 6 should print](#what-step-6-should-print) for the ranges to expect.
 
 Saturation is still low - see [Known limitations](#known-limitations). The rear
 OV8856 is **not** addressed here.
 
 ## What was actually broken
 
-Six independent faults across three layers. Each had to be fixed before the
+Seven independent faults across three layers. Each had to be fixed before the
 next became visible, which is why this took a while - and why the diagnostic
 scripts in `tools/` may be more useful to you than the patches.
 
@@ -172,13 +174,36 @@ stock libcamera 0.7.0             R/G 0.372   B/G 0.897    saturation 34%
   red signal, so the error lands almost entirely on red. Pinning it took the
   computed gain from 4.79 to 6.01, against 6.13 predicted from raw
   measurements. → `libcamera/ov5675.yaml`
-- **The EGL debayer does not apply the AWB gains.** Its shader has no gains
-  uniform — only `ccm`, `blacklevel`, `gamma`, `contrastExp` — so gains must be
-  folded into `params.combinedMatrix`, and empirically are not. Same scene,
-  same build, only `LIBCAMERA_SOFTISP_MODE` differing: GPU `R/G 0.552`, CPU
-  `R/G 1.091`. This is not sensor-specific and affects any camera on the
-  software ISP with GPU acceleration, which is the default.
-  → `tools/try-cpu-isp.sh`
+- **The EGL debayer does not apply the AWB gains.** Same scene, same build,
+  only `LIBCAMERA_SOFTISP_MODE` differing: GPU `R/G 0.552`, CPU `R/G 1.091`.
+  Not sensor-specific; it affects any camera on the software ISP with GPU
+  acceleration, which is the default.
+
+  **The mechanism is not known, and three plausible ones are ruled out.** An
+  earlier version of this file claimed the shader has no gains uniform. That is
+  wrong. `debayer_egl.cpp:475` uploads `params.combinedMatrix` as the `ccm`
+  uniform; `awb.cpp:46` folds the gains into that matrix unconditionally; the
+  apparently-wrong `GL_FALSE` on row-major data is deliberately compensated by
+  the shader indexing the matrix by hand (`bayer_unpacked.frag:173`, with a
+  comment block explaining it); and the EGL path does generate statistics. The
+  one real asymmetry found is that `DebayerCpu` branches on `ccmEnabled` while
+  `DebayerEGL` takes it as `[[maybe_unused]]` and always uses `combinedMatrix`.
+  Installing an identity `Ccm` does not fix it either.
+
+  Because the workaround is a colour correction, not `SOFTISP_MODE=cpu`, see
+  [Colour tuning](#colour-tuning). → `tools/try-cpu-isp.sh`
+
+### 7. `Saturation` is silently inert without a CCM (libcamera)
+
+`Adjust` implements `controls::Saturation` by writing `combinedMatrix`, but
+both the control's registration and its application are gated on
+`context.ccmEnabled` (`adjust.cpp:33` and `:104`). That flag is set in exactly
+one place, `Ccm::init` (`ccm.cpp:39`), which runs only if the tuning file
+defines a `Ccm` algorithm.
+
+So with no `ccms` section, `libcamerasrc saturation=2.0` is accepted and does
+nothing at all, with no warning. Adding an identity `Ccm` makes the same
+control start working. → `tools/install-ccm.sh`, `tools/set-saturation.sh`
 
 ## Installing
 
@@ -219,20 +244,26 @@ sudo tools/build-libcamera.sh deps
 sudo tools/build-libcamera.sh build
 sudo tools/build-libcamera.sh install
 sudo tools/install-tuning.sh
-sudo tools/try-cpu-isp.sh cpu
 
-# 5. verify colour
+# 5. colour correction (see "Colour tuning" - these numbers are per-camera)
+sudo tools/install-ccm.sh sat=1.8,wb=1.0972:1:2.6407
+
+# 6. verify colour
 tools/check-colour.sh
 
 # optional: hide the 64 dead ipu6 entries from the browser's camera list
 sudo tools/hide-raw-ipu6-nodes.sh
 ```
 
-Steps 1 and 4 are both required to clear the green/cyan cast. Step 1 fixes the
-red/blue transposition, step 4 fixes the three libcamera defects; either alone
-still looks wrong, which is what made this confusing to diagnose.
+Steps 1, 4 and 5 are all required to get colour right. Step 1 fixes the
+red/blue transposition, step 4 fixes the libcamera defects, step 5 corrects the
+residual white balance the GPU path leaves behind. Any one alone still looks
+wrong, which is what made this confusing to diagnose.
 
-### What step 5 should print
+**Do not copy the numbers in step 5.** They were solved for this camera in this
+room. Derive your own - see [Colour tuning](#colour-tuning).
+
+### What step 6 should print
 
 Point the camera at a normally lit scene, not a coloured surface filling the
 frame:
@@ -250,9 +281,10 @@ looking at if it is out:
 | symptom | cause | fix |
 |---|---|---|
 | `R/G` around 0.3–0.4, strong cyan cast | full step 4 not applied | re-run step 4 in order |
-| `R/G` around 0.55, cast reduced but present | patched libcamera live, GPU debayer still active | `sudo tools/try-cpu-isp.sh cpu` |
+| `R/G` around 0.55, cast reduced but present | no CCM installed | run step 5 |
 | balance neutral but colours plainly wrong (red objects look blue) | GBRG CFA patch not loaded | check `modinfo -n ov5675` resolves to `updates/dkms` |
 | saturation above ~30% | nothing from step 4 is in effect | check `systemctl show v4l2-relayd@default -p Environment` |
+| whites tinted lavender | blue coefficient too high for your light | re-derive it, see [Colour tuning](#colour-tuning) |
 
 Note the third row: **white balance can read perfectly neutral while every
 colour is wrong.** Grey-world AWB balances to grey whichever way the channels
@@ -279,6 +311,67 @@ sudo reboot
 the relay configuration it edited. The `/usr/local` libcamera build is left on
 disk by `build-libcamera.sh revert` — remove it by hand if you want the space.
 
+## Colour tuning
+
+Step 5 installs a colour correction matrix. It does two jobs: it corrects the
+white balance the GPU debayer leaves wrong (defect 6), and its mere presence
+switches on the `ccmEnabled` code path, without which the `Saturation` control
+does nothing (defect 7).
+
+**Use the GPU debayer, not `SOFTISP_MODE=cpu`.** Earlier revisions of this file
+recommended the CPU path as the workaround for defect 6. That was a mistake.
+Measured on the same machine:
+
+| | CPU debayer | GPU debayer |
+|---|---|---|
+| frame time (with a CCM) | ~13 ms | no stutter |
+| black floor on a lit scene | `(70, 50, 144)` | `(28, 31, 5)` |
+
+The CPU path also applies the CCM per pixel in software, which more than
+doubled frame time here. The violet shadows in the CPU column are flare being
+amplified by the ~4.9x blue AWB gain; the GPU path does not apply that gain, so
+its blacks stay black. Correct the balance with the matrix instead.
+
+### Deriving your own matrix
+
+```sh
+# 1. hold WHITE PRINTER PAPER filling the centre of the frame, then capture
+tools/ccm-preview.sh              # refuses frames it cannot tune from
+
+# 2. install, sweep saturation by eye, ~8 s per step
+sudo tools/install-ccm.sh sat=1.2,wb=<r>:1:<b>
+sudo tools/install-ccm.sh sat=1.8,wb=<r>:1:<b>
+
+sudo tools/install-ccm.sh revert  # back out entirely
+```
+
+`tools/try-ccm.py` renders a captured frame through candidate matrices offline,
+so you compare options side by side instead of restarting the relay for each.
+The simulation is exact rather than approximate — the pipeline computes
+`gammaLut[CCM * (gains * (raw - blacklevel))]` with `kDefaultGamma = 2.2` and
+`kDefaultContrast = 1.0`, so linearising a capture, applying the matrix and
+re-encoding reproduces what the camera would have emitted. Identity round-trips
+at 0/255 error.
+
+The values in step 5 came out of that process on this machine:
+`wb=1.0972:1:2.6407` under a 4000 K LED, `sat=1.8` chosen by eye.
+
+### Three traps, all of which cost time here
+
+- **Your wall is probably not neutral.** Most interior paint is cream. Calibrate
+  against it and you cancel a yellow that was genuinely there, so everything
+  actually white comes out lavender. Use printer paper. Deriving the correction
+  against a wall gave `b=3.24` here; against paper it was `2.64`.
+- **Lens shading makes the answer depend on where you measure.** See below. Take
+  the reference from the centre, which is where faces and held objects are.
+- **Saturation puts magenta on blown highlights.** A clipped highlight arrives
+  at the matrix as `(1,1,1)` rather than the sensor's native ratios, so the
+  correction over-shoots: red and blue pin at maximum, green is pulled down.
+  At `sat=1.0` clipped whites stay white; green falls to 0.86 at `sat=1.4` and
+  0.59 at `sat=2.2`. That is inherent to correcting a large imbalance with a
+  matrix, not a bug — real ISPs use highlight recovery, which the soft ISP has
+  no equivalent of.
+
 ## Known limitations
 
 **Saturation, and it is a sensor limit not a software one.** Colours render
@@ -302,10 +395,12 @@ find. Excluding shadow-corrupted dark patches made the blue row *worse*
 kept (`tools/solve-ccm.py`, `tools/make-ccm-target.py`) but do not expect a
 usable matrix from this sensor without better equipment than a tablet screen.
 
-**`LIBCAMERA_SOFTISP_MODE=cpu` costs frame rate.** Relay CPU goes from ~36% to
-~45%. Measured frame rate was inconsistent between runs (28 and 17.6 fps) and
-has not been pinned down. `csi2-6 Transfer FIFO overflow` messages appear under
-this load - dropped frames, not corrupted ones.
+**Blues stay weak, and that is mostly physics.** The sensor's native blue
+response is about 16% of green, and under warm indoor light there is little
+blue to reflect in the first place. A correctly white-balanced image is
+achievable; vivid blues are not. Pushing the blue coefficient higher trades
+directly against noise, because it amplifies the weakest channel. Daylight
+helps far more than any tuning value.
 
 **The rear OV8856 does not work.** Its rails are covered by the same board data,
 but its reset/powerdown GPIOs are unknown, and pins 3 and 4 belong to the front
@@ -316,9 +411,30 @@ ACPI, and mainline's skips regulators and GPIOs when `is_acpi_node()`.
 raw nodes out of the `video` group. That is the trade for a clean camera list;
 `cam` and `check-camera.sh` will report permission errors without it.
 
-**Lens shading is uncorrected.** Corners fall off noticeably and per-channel
-falloff differs, which is the likely source of the residual ~11% blue excess
-between centre-weighted and full-frame measurements.
+**Lens shading is uncorrected, and it is the largest remaining defect.**
+Measured on a flat field (one uniform wall filling the frame):
+
+```
+              brightness   linear B/G
+centre            237         1.11
+edges         ~165 (-31%)   1.86 - 1.99
+```
+
+Brightness falls off 31% into the corners, and **B/G varies 1.8x across the
+frame** - blue is nearly twice as strong at the edges as in the middle. That is
+an IR-cut filter behaving as interference filters do: its passband shifts with
+the angle of incidence, so off-axis rays get a different colour response.
+
+The consequence is that **no single white balance can be correct everywhere**.
+Correct the centre and the corners go blue; correct the corners and the centre
+goes yellow. The tuning here targets the centre, because that is where faces
+and held objects are.
+
+libcamera's simple IPA has no lens shading algorithm at all - its algorithms
+are `adjust`, `agc`, `awb`, `blc` and `ccm` - so this is not a setting that can
+be turned on. Fixing it means writing a new IPA algorithm plus a spatial gain
+map in the debayer. `data/` has the flat-field capture needed to build the
+correction table.
 
 ## Diagnostics
 
@@ -338,6 +454,10 @@ differs:
 | `demosaic-both-ways.sh` | capture one raw frame, demosaic as GRBG and GBRG, compare |
 | `check-rb-swap-raw.sh` | per-CFA-position response to a coloured subject, raw |
 | `solve-ccm.py`, `make-ccm-target.py` | fit a colour correction matrix from a displayed target |
+| `ccm-preview.sh` | capture a frame and render it through candidate matrices; refuses unusable frames |
+| `try-ccm.py` | the renderer behind it; `--matrix <spec>` prints coefficients |
+| `install-ccm.sh` | install a matrix and/or raise the black level |
+| `set-saturation.sh` | the live saturation knob (needs a CCM installed first) |
 | `check-boot.sh` | IPU6 firmware timing and probe order after a reboot |
 | `check-camera.sh` | end-to-end state: modules, i2c clients, media graph, nodes |
 | `test-sensor.sh`, `test-load.sh` | load the modules and read the chip id by hand |
@@ -376,10 +496,14 @@ Nothing merged yet.
 | `libcamera-patch/0001-*` AWB gain clamp | libcamera-devel |
 | `libcamera/ov5675.yaml` black level | libcamera-devel |
 | `upstream-libcamera/0001-*` sensor delays | libcamera-devel |
+| `Saturation` inert without a `Ccm` (report only) | libcamera-devel |
 | GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable as-is** - needs a board-specific key |
 
-`upstream-libcamera/AWB-BUG-REPORT.md` writes up all three libcamera defects
-with measurements.
+`upstream-libcamera/AWB-BUG-REPORT.md` writes up all four libcamera defects
+with measurements. Its EGL section states which explanations have been *ruled
+out* as well as what was observed - an earlier draft asserted a mechanism that
+turned out to be wrong, and reporting a confident wrong cause is worse than
+reporting an honest observation.
 
 ## Licence
 

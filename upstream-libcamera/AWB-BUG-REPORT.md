@@ -1,5 +1,5 @@
-# Soft ISP: three colour defects found on an OV5675 (AWB gain clamp, black
-# level sensitivity, GPU debayer discarding AWB gains)
+# Soft ISP: four colour defects found on an OV5675 (AWB gain clamp, black
+# level sensitivity, EGL debayer not applying AWB gains, inert Saturation)
 
 Draft for libcamera-devel@lists.libcamera.org. Nothing has been sent.
 
@@ -21,14 +21,15 @@ apply AWB gains
 ## Summary
 
 The camera produced a strong cyan cast that no amount of configuration could
-shift. Chasing it turned up three separate problems, each of which masked the
-next: fixing any one alone changes little or nothing.
+shift. Chasing it turned up four separate problems, the first three of which masked
+each other: fixing any one alone changes little or nothing.
 
 | # | Problem | Effect on output |
 |---|---------|------------------|
 | 1 | AWB clamps colour gains at a hardcoded 4.0 | red gain pinned at 4.0, needs 6.1 |
 | 2 | Black level is guessed from the scene when no tuning file exists | computed red gain wrong (4.79 vs 6.01) |
 | 3 | The EGL debayer does not apply the AWB gains | correct gains never reach the pixels |
+| 4 | `Saturation` is inert unless the tuning file defines a `Ccm` | control accepted, silently ignored |
 
 Measured on lit white paper, in **linear** light (the sRGB transfer function is
 undone before averaging), R/G and B/G, where 1.000 is neutral:
@@ -115,16 +116,59 @@ CPU             R/G 1.091   B/G 0.997    saturation  5.1%
 ```
 
 The CPU debayer applies `params.gains` directly when building its lookup
-tables. The EGL shader has no gains uniform at all - `debayer_egl.cpp` binds
-only `ccm`, `blacklevel`, `gamma`, `contrastExp`, `tex_step`, `tex_size`,
-`stride_factor`, `tex_bayer_first_red` and `proj_matrix` - so the gains have to
-arrive folded into `params.combinedMatrix`. Empirically they do not, or not
-fully.
+tables. The EGL path does not, and the output is visibly wrong.
 
-I have not traced where `combinedMatrix` is assembled or why the gains are
-lost, so I am reporting the observation rather than proposing a fix. If this is
-confirmed, it affects every sensor using the software ISP with GPU
+**What is NOT the cause.** An earlier draft of this report claimed the EGL
+shader has no gains uniform and that the gains are therefore never folded in.
+That is wrong, and it is stated here explicitly so nobody spends time on it:
+
+- `debayer_egl.cpp:475-485` does upload `params.combinedMatrix`, as the `ccm`
+  uniform.
+- `awb.cpp:46` folds the gains into `combinedMatrix` unconditionally
+  (`combinedMatrix = combinedMatrix * gainMatrix`), so that matrix does carry
+  them.
+- The column-major upload is *not* a bug either. `glUniformMatrix3fv` is called
+  with `GL_FALSE` on row-major data, but `bayer_unpacked.frag:173-175` indexes
+  the matrix manually to compensate, and a comment block at lines 144-165
+  documents exactly that convention. Upload and shader agree.
+- The EGL path does generate statistics (`SwStatsCpu`, `debayer_egl.cpp:566`),
+  so the AWB is not starved of input.
+
+**A concrete asymmetry worth checking.** `DebayerCpu::configure()` stores
+`ccmEnabled` (`debayer_cpu.cpp:528`) and branches on it per pixel, using the
+gains LUTs when it is false and `combinedMatrix` when it is true.
+`DebayerEGL::configure()` takes the same argument as
+`[[maybe_unused]] bool ccmEnabled` (`debayer_egl.cpp:291`) and ignores it,
+always going through `combinedMatrix`. The two backends therefore disagree
+about which path is authoritative, and `ccmEnabled` is only ever true when a
+tuning file happens to define a `Ccm` algorithm (`ccm.cpp:39` is its sole
+assignment).
+
+I could not pin down where the gain is actually lost, so this is reported as a
+reproducible observation with the wrong explanations eliminated, rather than as
+a diagnosis. Installing an identity `Ccm` in the tuning file does **not** fix
+it: on this hardware the GPU output still needs a manual diagonal correction of
+R x1.10, B x2.64 to reach neutral, measured against white paper.
+
+If confirmed, it affects every sensor using the software ISP with GPU
 acceleration, which is the default when `HAVE_DEBAYER_EGL` is set.
+
+## 4. The saturation control is silently inert without a CCM
+
+`Adjust` registers `controls::Saturation` and applies it by modifying
+`combinedMatrix` (`adjust.cpp:105`), but both the registration and the
+application are gated on `context.ccmEnabled` (`adjust.cpp:33` and `:104`).
+That flag is set in exactly one place - `Ccm::init` (`ccm.cpp:39`) - which runs
+only if the tuning file defines a `Ccm` algorithm.
+
+So for any sensor whose tuning file has no `ccms` section, setting
+`Saturation` - including via `libcamerasrc saturation=2.0` - is accepted and
+does nothing. No warning is logged. Adding an identity `Ccm` to the tuning file
+makes the same control start working, which is a surprising dependency between
+an unrelated tuning entry and a public control.
+
+Either the control should be rejected when it cannot be honoured, or
+`Adjust` should be able to write `combinedMatrix` on its own.
 
 ## Reproduction
 
