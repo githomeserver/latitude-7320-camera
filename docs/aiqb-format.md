@@ -5,8 +5,16 @@ machine's front camera. `0BF501T3` is the ACPI `_DDN`, so it is this module.
 The `OV5678_YHUE_TGL` variant is byte-identical, so this is sensor-level
 tuning, not per-unit calibration.
 
-Everything below was derived by inspection. Nothing here is from Intel
-documentation, and the parts that are guesses are marked as such.
+The record layout is **documented by Intel**, in `ia_cmc_types.h` from the
+public `ipu6-camera-bins` repo (`include/ipu6/ia_imaging/`, the plain `ipu6`
+variant for Tiger Lake). Get it with:
+
+    gh api repos/intel/ipu6-camera-bins/contents/include/ipu6/ia_imaging/ia_cmc_types.h \
+       --jq '.content' | base64 -d > ia_cmc_types.h
+
+`cmc_name_id` maps record type IDs to names, and the structs give exact
+layouts. No need to touch a Windows install for the format - only for the
+`.aiqb` itself.
 
 ## Container
 
@@ -21,6 +29,23 @@ CPFF                      magic, then total size
 
 Record header is 8 bytes: `uint32 size`, then `format_id`, `group_id`,
 `type_id`, `reserved` as single bytes. `size` includes the header. 17 records.
+
+## Record identification
+
+`type_id` maps straight onto `cmc_name_id`:
+
+| type | name | size here |
+|---|---|---|
+| 2, 3, 31 | general_data, black_level, black_level_global | 40, 464, 2056 |
+| 7, 9 | module_sensitivity, noise | 16, 32 |
+| 13 | optics_and_mechanics | 88 |
+| 15, 16, 17 | chromaticity_response, flash_chromaticity, nvm_info | 1120, 24, 16 |
+| 19, 20 | analog_gain_conversion (deprecated), digital_gain | 16, 24 |
+| 22 | geometric_distortion_correction2 | 10360 |
+| **25** | **advanced_color_matrices** - the CCM | 6552 |
+| 26, 34 | hdr, multi_gain_conversions | 64, 280 |
+| **27** | **infrared_correction** | 5112 |
+| **28** | **lens_shading_correction_4x4** | 207456 |
 
 ## Which records matter
 
@@ -98,12 +123,41 @@ is 55%.
   not established. The 2-uint16 per-plane header sometimes reads 32768 or 0,
   which suggests the split between preamble and plane header is not exactly
   right even though the total arithmetic works.
-- **Record 101/27** (5112 bytes, RGB-IR only). Presumably the IR subtraction
-  model - `iacamera64.sys` documents `x2b_rgbir` registers `irmodelcua{r,g,b}N`
-  (11 each), `irmodelcub{r,g,b}N` (6 each), `irmodelcux{r,g,b}N` (12 each),
-  plus sigma/offset/max, which is a per-channel model rather than a constant.
-- **Colour matrices.** Not yet located. Candidates are the small records
-  102/13 (88 bytes) and 101/26 (64 bytes).
+- **Colour matrices** are record 100/25, `cmc_advanced_color_matrix_correction`:
+  `num_light_srcs`, `num_sectors`, then per light source a `traditional` matrix
+  plus an array of per-hue-sector matrices. Not yet extracted.
+
+## Record 101/27 - infrared_correction (decoded)
+
+`cmc_infrared_correction`: `grid_indices[4][4]`, `num_light_srcs`, grid count,
+`grid_width`, `grid_height`, then per light source a `cmc_ir_grid`.
+
+The grid indices confirm the mosaic and phase a third time:
+
+```
+ 0 -1  0 -1        G  I  G  I     0 = green
+ 1  0  2  0        R  G  B  G     1 = red
+ 0 -1  0 -1        G  I  G  I     2 = blue
+ 2  0  1  0        B  G  R  G    -1 = IR, not corrected
+```
+
+Every -1 lands on an IR pixel. Red at (1,0)/(3,2), blue at (1,2)/(3,0).
+
+Layout: 830-byte stride per light source = 20-byte header + 3 grids of 15x9
+uint16. Six light sources, with `chromaticity_i_per_g` - the sensor's IR/G
+ratio:
+
+```
+A (incandescent)  0.862      D65   0.484
+F12 (fluorescent) 0.686      D75   0.459
+D50               0.550      (type 20, unknown)  0.946
+```
+
+**Practical consequence.** Measured on this machine, IR/G is about **0.10** -
+far below even the daylight figure. White LEDs emit almost no near-infrared,
+and the room here is a 4000 K LED. So IR contamination is a second-order
+effect *in this lighting*, which is why empirical IR subtraction barely changed
+the image. It would matter a great deal under halogen or daylight.
 
 ## Licensing
 
