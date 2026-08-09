@@ -48,6 +48,18 @@ namespace libcamera {
 class RgbIrToBayer
 {
 public:
+	/**
+	 * \brief Bayer order of the generated output
+	 *
+	 * Must match what the consumer was configured for. Getting this wrong
+	 * transposes red and blue, which is the exact fault this conversion
+	 * exists to remove, so it is explicit rather than defaulted.
+	 */
+	enum class Order {
+		GRBG,   /* G R / B G */
+		GBRG,   /* G B / R G */
+	};
+
 	/** \brief Which channel sits at each position of the 4x4 cell */
 	enum Channel : uint8_t {
 		Green = 0,
@@ -105,7 +117,31 @@ public:
 		    uint16_t *dst, unsigned int dstStride,
 		    const ShadingMap *shading = nullptr) const;
 
+	/**
+	 * \brief Convert in place of the input, keeping its dimensions
+	 *
+	 * Writes each 4x4 cell's values into four identical 2x2 GRBG cells, so
+	 * the result is a valid Bayer image at the *input* resolution carrying
+	 * half-resolution detail.
+	 *
+	 * This exists so the conversion can be dropped in ahead of an existing
+	 * debayer without renegotiating any buffer size. Downstream sees the
+	 * dimensions it already expects. Detail is that of the half-size
+	 * output, which for a pipeline that scales down to 720p anyway is not
+	 * visible; prefer convert() where the size change can be accommodated.
+	 */
+	int convertSameSize(const uint8_t *src, unsigned int srcWidth,
+			    unsigned int srcHeight, unsigned int srcStride,
+			    uint16_t *dst, unsigned int dstStride, Order order,
+			    const ShadingMap *shading = nullptr) const;
+
 private:
+	/* Shared per-cell work: gather, average, shade, re-add the pedestal. */
+	void cellValues(const uint8_t *lines[4], unsigned int cx,
+			unsigned int cols, unsigned int cy, unsigned int rows,
+			const ShadingMap *shading,
+			uint16_t &G, uint16_t &R, uint16_t &B) const;
+
 	/* Positions within the cell holding each channel, and how many. */
 	uint8_t positions_[4][8];
 	uint8_t counts_[4];
