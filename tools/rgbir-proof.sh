@@ -20,6 +20,7 @@ systemctl stop v4l2-relayd.service
 sleep 2
 echo
 python3 "$HERE/rgbir-proof.py" "$@"
-for f in /tmp/rgbir-proof.png /tmp/rgbir-asnow.png /tmp/rgbir-fixed.png; do
+for f in /tmp/rgbir-proof.png /tmp/rgbir-asnow.png /tmp/rgbir-fixed.png \
+         /tmp/rgbir-raw.bin /tmp/rgbir-raw.bin.txt; do
     [ -f "$f" ] && chown "${SUDO_USER:-root}" "$f" 2>/dev/null
 done

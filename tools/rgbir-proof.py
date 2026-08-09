@@ -51,15 +51,25 @@ BAYER_R = [i * 4 + j for i in range(4) for j in range(4)
            if i % 2 == 1 and j % 2 == 0]
 
 
-def cells(cap, black):
+def cells(cap, black, dump=None):
     """Yield (rgbi, bayer_rgb) per 4x4 cell, black-level corrected.
 
     Both tuples come from the same 16 pixels; only the grouping differs.
+    If dump is given, the raw buffer is written there first so that other
+    hypotheses - a different mosaic phase, R/B swapped, IR subtraction - can be
+    tested offline without asking for another capture.
     """
     import fcntl
     b = msd.Buffer(type=msd.BUF_TYPE_VIDEO_CAPTURE, memory=msd.MEMORY_MMAP)
     fcntl.ioctl(cap.fd, msd.VIDIOC_DQBUF, b)
     mv = cap.maps[b.index]
+    if dump:
+        with open(dump, "wb") as fh:
+            fh.write(mv[:cap.stride * cap.h])
+        with open(dump + ".txt", "w") as fh:
+            fh.write(f"{cap.w} {cap.h} {cap.stride} {cap.fourcc}\n"
+                     f"black {' '.join(str(v) for v in black)}\n")
+        print(f"  raw saved to {dump} ({cap.stride * cap.h} bytes)")
     stride = cap.stride
     W, H = cap.w // 4, cap.h // 4
     px = [0] * 16
@@ -133,8 +143,20 @@ def main():
     print(f"capture  {cap.w}x{cap.h} {cap.fourcc}")
 
     ctrls = msd.Ctrls(subdev)
-    emin, emax = msd.ctrl_range(subdev, "exposure")
     gmin, gmax = msd.ctrl_range(subdev, "analogue_gain")
+
+    # Lengthen the frame before reading the exposure range. The ceiling is set
+    # by the frame length, and the first run of this pinned BOTH exposure and
+    # gain at maximum for only 11% of full scale - a noise-dominated frame with
+    # almost no colour discrimination left to recover. Frame rate is irrelevant
+    # for a single still, so trade it for light.
+    vmin, vmax = msd.ctrl_range(subdev, "vertical_blanking")
+    if vmax:
+        want_v = min(vmax, 6000)
+        ctrls.set(msd.CID_VBLANK, want_v)
+        print(f"vblank   {want_v} (range {vmin}..{vmax}) to extend exposure")
+    emin, emax = msd.ctrl_range(subdev, "exposure")
+    print(f"exposure range now {emin}..{emax}")
     cap.start()
     try:
         ctrls.set(msd.CID_ANALOGUE_GAIN, gmin)
@@ -175,7 +197,7 @@ def main():
         print("\ndemosaicing (pure python over 315k cells, ~20s)...")
         W, H = cap.w // 4, cap.h // 4
         rgbir_px, bayer_px = [], []
-        for a, bpx in cells(cap, black):
+        for a, bpx in cells(cap, black, dump="/tmp/rgbir-raw.bin"):
             rgbir_px.append(a)
             bayer_px.append(bpx + (a[3],))
     finally:
