@@ -1,0 +1,36 @@
+sensor   ov5675 1-0036  /dev/v4l-subdev8
+capture  /dev/video49
+  configuring ov5675 1-0036:0 -> Intel IPU6 CSI2 6:1 -> Intel IPU6 ISYS Capture 48  SGBRG10_1X10/1296x972
+format   1296x972 GB10 stride=2624
+declared SGBRG10_1X10
+
+black-level-corrected mean per position (10-bit counts)
+
+        col 0     col 1     col 2     col 3
+  row 0  G     3.5  I     0.4  G     3.5  I     0.4
+  row 1  R     3.1  G     3.5  B     3.1  G     3.5
+  row 2  G     3.5  I     0.4  G     3.5  I     0.4
+  row 3  B     3.1  G     3.4  R     3.1  G     3.4
+
+==================================================================
+DECISIVE: positions a 2x2 Bayer says are the SAME channel
+==================================================================
+  (1,0) vs (1,2)      3.1 vs     3.1   differ   0.2%   (R vs B under RGB-IR)
+  (1,0) vs (3,0)      3.1 vs     3.1   differ   0.0%   (R vs B under RGB-IR)
+  (3,0) vs (3,2)      3.1 vs     3.1   differ   0.3%   (B vs R under RGB-IR)
+
+CONTROL: positions RGB-IR says are the same (both IR)
+  (0,1) vs (0,3)      0.4 vs     0.4   differ   1.1%
+  (0,1) vs (2,1)      0.4 vs     0.4   differ   1.1%
+
+GROUPED under Intel's GIGI_RGBG_GIGI_BGRG:
+  G  n=8  mean     3.5   spread    0.0
+  I  n=4  mean     0.4   spread    0.0
+  R  n=2  mean     3.1   spread    0.0
+  B  n=2  mean     3.1   spread    0.0
+
+==================================================================
+VERDICT: consistent with plain 2x2 Bayer (0.3% spread).
+Intel's config says otherwise - re-run on a MORE COLOURED scene
+before believing this; a neutral scene cannot separate R from B.
+==================================================================
