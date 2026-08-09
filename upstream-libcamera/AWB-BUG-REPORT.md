@@ -5,8 +5,8 @@ Draft for libcamera-devel@lists.libcamera.org. Nothing has been sent.
 
 ---
 
-**Subject:** Soft ISP: AWB gain clamped at 4.0, and the EGL debayer does not
-apply AWB gains
+**Subject:** Soft ISP: AWB colour gains capped too low (4.0 on 0.7.0, 3.996 on
+master), and the EGL debayer does not apply AWB gains
 
 ## Environment
 
@@ -26,7 +26,7 @@ each other: fixing any one alone changes little or nothing.
 
 | # | Problem | Effect on output |
 |---|---------|------------------|
-| 1 | AWB clamps colour gains at a hardcoded 4.0 | red gain pinned at 4.0, needs 6.1 |
+| 1 | AWB caps colour gains at 4.0, and at 3.996 on master | red gain pinned at the cap, needs 6.1 |
 | 2 | Black level is guessed from the scene when no tuning file exists | computed red gain wrong (4.79 vs 6.01) |
 | 3 | The EGL debayer does not apply the AWB gains | correct gains never reach the pixels |
 | 4 | `Saturation` is inert unless the tuning file defines a `Ccm` | control accepted, silently ignored |
@@ -41,7 +41,7 @@ stock 0.7.0                       R/G 0.372   B/G 0.897    saturation 34%
 + LIBCAMERA_SOFTISP_MODE=cpu      R/G 1.091   B/G 0.997    saturation 5.1%
 ```
 
-## 1. AWB clamps colour gains at 4.0
+## 1. AWB caps colour gains too low
 
 `src/ipa/simple/algorithms/awb.cpp`:
 
@@ -71,10 +71,45 @@ IPASoftAwb awb.cpp:103 gain R/B: Vector { 4, 1, 1.54581 }; temperature: 6451
 Blue jitters in the fourth decimal; red does not move at all.
 
 `AwbGrey` in libipa on master has no such ceiling - it does
-`means.g() / std::max(means.r(), 1.0)` - so this may already be resolved
-upstream by the refactor, and 0.7.0 simply predates it. A patch matching that
-behaviour is attached. With it applied the gain becomes live (4.73-4.79) and
-R/G moves 0.372 -> 0.551.
+`means.g() / std::max(means.r(), 1.0)`. The clamp survives one layer up,
+though, so the refactor does **not** resolve this. Checked against master
+`62d4bfc45079` on 2026-08-09:
+
+- `d5d00b9c3c5d` (2026-08-06, "ipa: simple: awb: Port to use libipa
+  AwbAlgorithm") deleted the code quoted above. The simple IPA now computes
+  RGB means only and delegates the gain calculation.
+- `AwbAlgorithmBase::process()` then clamps every computed result:
+  `awbResult.gains = awbResult.gains.clamp(gainMin_, gainMax_)`
+  (`src/ipa/libipa/awb.cpp:385`).
+- Those bounds come from a fixed-point template parameter. The simple IPA
+  instantiates `AwbAlgorithm<UQ<2, 8>>` (`src/ipa/simple/algorithms/awb.h:59`)
+  and `src/ipa/libipa/awb.h:120-121` derives `gainMin_ = 1.0` and
+  `gainMax_ = UQ<2,8>::max`, which is 1023/256 = **3.996**.
+
+So on master this sensor is still pinned, now at 3.996 rather than 4.0.
+
+The choice is not forced by anything. The member's own comment concedes as
+much - "There actually is no Q register format for SoftISP, but allow the
+colour gains to range in the [0.0f, 3.999f] interval, which seems reasonable"
+- and nothing in the software path quantises a gain: `DebayerParams::gains` is
+an `RGB<double>`, and `DebayerCpu` builds its lookup tables in double,
+clamping only the table index rather than the gain magnitude. The identical
+`AwbAlgorithm<UQ<2, 8>>` appears in the rkisp1 IPA
+(`src/ipa/rkisp1/algorithms/awb.h:52`), where that format is a real register
+layout; the software ISP appears to have inherited the range without the
+hardware.
+
+Note also that the comment describes the interval as `[0.0f, 3.999f]` while
+`gainMin_ = std::max(Q::TraitsType::min, 1.0f)` makes the floor 1.0, so a
+sensor whose red is *stronger* than green cannot be attenuated either.
+
+Two patches are attached, for the two trees:
+
+- Against master, widening the format to `UQ<3, 8>` (ceiling 7.996). Not
+  compile-tested - see Caveats.
+- Against 0.7.0, removing the hardcoded clamp. This is the one actually
+  measured here: with it applied the gain becomes live (4.73-4.79) and R/G
+  moves 0.372 -> 0.551.
 
 ## 2. Black level is guessed from the scene
 
@@ -194,8 +229,16 @@ a while.
 - Native and post-ISP figures are separate captures of a static scene seconds
   apart, not the same frame.
 - Point 3 is an observation with a clean A/B, not a diagnosis.
+- Every measurement here was taken on 0.7.0. The master patch is reasoned from
+  the source and is neither compile-tested nor measured: the machine was a
+  loan and has gone back, so no further captures are possible on it. The
+  sensor figures it rests on (R/G 0.164 native, red gain 6.1 for neutral) are
+  properties of the sensor rather than of a libcamera version.
 
 ## Attachments
 
-- `0001-soft-awb-remove-hardcoded-4.0-gain-clamp.patch`
+- `0001-ipa-simple-awb-Widen-the-colour-gain-range-to-UQ-3-8.patch`
+  (against master `62d4bfc45079`)
+- `0001-soft-awb-remove-hardcoded-4.0-gain-clamp.patch` (against 0.7.0, the
+  tree these measurements were taken on)
 - `ov5675.yaml` (black level only)

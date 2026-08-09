@@ -238,10 +238,13 @@ stock libcamera 0.7.0             R/G 0.372   B/G 0.897    saturation 34%
 + LIBCAMERA_SOFTISP_MODE=cpu      R/G 1.091   B/G 0.997    saturation 5.1%
 ```
 
-- **The AWB clamps colour gains at a hardcoded 4.0.** This sensor needs 6.1, so
-  red sat pinned at exactly 4 on every frame while blue computed normally.
-  `AwbGrey` in libipa on master has no such ceiling, so 0.7.0 may simply
-  predate that refactor. → `libcamera-patch/`
+- **The AWB caps colour gains too low.** 0.7.0 clamps at a hardcoded 4.0; this
+  sensor needs 6.1, so red sat pinned at exactly 4 on every frame while blue
+  computed normally. → `libcamera-patch/` (applied to the local 0.7.0 build).
+  Master does not fix this: the hardcoded clamp went away in `d5d00b9c3c5d`,
+  but `AwbAlgorithmBase::process()` clamps to `gainMax_`, derived from the
+  `AwbAlgorithm<UQ<2, 8>>` the simple IPA instantiates — a ceiling of 3.996.
+  → `upstream-libcamera/0001-ipa-simple-awb-Widen-*` widens it to `UQ<3, 8>`.
 - **The black level is guessed from the scene** when no tuning file exists —
   the 2nd percentile of the luminance histogram — and the AWB subtracts that
   guess before computing gains. Here the pedestal (64/1023) is about twice the
@@ -593,9 +596,10 @@ disclosure shapes how the libcamera side should be framed.
 | `kernel-patches/0001-*` int3472 board data | platform-driver-x86 |
 | `kernel-patches/0002-*` ov5675 ACPI id | linux-media |
 | `kernel-patches/0003-*` ipu-bridge entry | linux-media |
-| `libcamera-patch/0001-*` AWB gain clamp | libcamera-devel |
+| `upstream-libcamera/0001-ipa-simple-awb-Widen-*` AWB gain range | libcamera-devel |
+| `libcamera-patch/0001-*` AWB 4.0 clamp | **local 0.7.0 build only** - the row above replaces it upstream |
 | `libcamera/ov5675.yaml` black level | libcamera-devel |
-| `upstream-libcamera/0001-*` sensor delays | libcamera-devel |
+| `upstream-libcamera/0001-libcamera-sensor-*` sensor delays | libcamera-devel |
 | `Saturation` inert without a `Ccm` (report only) | libcamera-devel |
 | GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable** - a workaround, see below |
 

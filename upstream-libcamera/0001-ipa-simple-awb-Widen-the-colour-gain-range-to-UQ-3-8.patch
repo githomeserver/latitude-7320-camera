@@ -1,0 +1,58 @@
+From af2093fab09e87e572146fa38e07ab246bd9a264 Mon Sep 17 00:00:00 2001
+From: Sahan Nissanka <adee.sahan@gmail.com>
+Date: Sun, 9 Aug 2026 17:00:56 +1000
+Subject: [PATCH] ipa: simple: awb: Widen the colour gain range to UQ<3, 8>
+
+The software ISP bounds its AWB colour gains with a fixed-point format,
+UQ<2, 8>, capping them at 3.996. AwbAlgorithmBase::process() clamps every
+computed result to that ceiling, so a sensor that needs more can never be
+white balanced and sits permanently short of neutral.
+
+As the comment on the member notes, there is no register format behind
+this choice. The software ISP carries the gains as double throughout:
+DebayerParams::gains is an RGB<double>, and DebayerCpu builds its lookup
+tables in double, clamping only the table index rather than the gain. The
+bound is therefore free to be chosen, and 3.996 is too low for real
+sensors.
+
+On an OV5675 (Dell Latitude 7320 Detachable, IPU6, software ISP) pointed
+at lit white paper, the raw Bayer response with the black level subtracted
+is R/G 0.164 and B/G 0.665, so reaching neutral needs a red gain of 6.1.
+Against the previous hardcoded 4.0 clamp the red gain pinned at the
+ceiling on every frame while blue computed normally at 1.55, leaving a
+cyan cast; the 3.996 ceiling has the same effect.
+
+Widen the format to UQ<3, 8>, which raises the ceiling to 7.996 and leaves
+headroom for similarly red-weak sensors.
+
+Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/ipa/simple/algorithms/awb.h | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/awb.h b/src/ipa/simple/algorithms/awb.h
+index ff0a7a28..77478e6d 100644
+--- a/src/ipa/simple/algorithms/awb.h
++++ b/src/ipa/simple/algorithms/awb.h
+@@ -52,11 +52,13 @@ private:
+ 					 const SwIspStats *stats) const;
+ 
+ 	/*
+-	 * There actually is no Q register format for SoftISP, but allow the
+-	 * colour gains to range in the [0.0f, 3.999f] interval, which seems
+-	 * reasonable.
++	 * There actually is no Q register format for SoftISP, so the format
++	 * only serves to bound the gains. UQ<2, 8> caps them at 3.996, which
++	 * is too low: an OV5675 has a red response of 0.164 relative to green
++	 * and needs a red gain of 6.1 to reach neutral. UQ<3, 8> raises the
++	 * ceiling to 7.996 and leaves room for similarly red-weak sensors.
+ 	 */
+-	AwbAlgorithm<UQ<2, 8>> awbAlgo_;
++	AwbAlgorithm<UQ<3, 8>> awbAlgo_;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.54.0
+
