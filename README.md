@@ -13,12 +13,12 @@ requirements)".
 
 ## The short version
 
-**The sensor is not an OV5678. It is an OV5675, and Linux has had a driver for
-it since 2019.**
+**`ov5675.c` drives it — but the sensor is RGB-IR, and no Linux driver can
+describe that yet.**
 
-ACPI describes the part as `OVTI5678` and no driver has ever claimed that ID.
-Once powered, it reports chip id `0x005675` at register `0x300a` — exactly what
-`ov5675.c` expects. Every other value agrees too:
+ACPI names the part `OVTI5678` and no driver has ever claimed that ID. Once
+powered it reports chip id `0x005675` at register `0x300a`, and every value
+`ov5675.c` is sensitive to agrees:
 
 | measured on this machine | `ov5675.c` |
 |---|---|
@@ -28,9 +28,29 @@ Once powered, it reports chip id `0x005675` at register `0x300a` — exactly wha
 | 5MP front camera | 2592×1944 |
 
 Three of those came from ACPI *before* the sensor was ever powered on. So no
-reverse engineering, no new sensor driver, and no recovering register tables
-from a Windows binary — which is what the problem had looked like for three
-years.
+new sensor driver and no reverse-engineered register tables were needed to make
+it **stream** — which is what the problem had looked like for three years.
+
+**Colour is a different story.** This is not a plain OV5675. It carries a 4×4
+RGB-IR colour filter array, one pixel in four being infrared
+([defect 5](#5-the-sensor-is-rgb-ir-not-bayer-at-all-kernel--root-cause)):
+
+```
+G I G I
+R G B G
+G I G I
+B G R G
+```
+
+Read as the 2×2 Bayer every Linux tool assumes, the "blue" channel is **pure
+infrared** and the "red" channel interleaves real red with real blue. That one
+fact explains every colour problem documented below, and it cannot be fixed in
+a driver: **mainline V4L2 has no RGB-IR media bus code at all.**
+
+An earlier version of this file said flatly "it is an OV5675". That was wrong,
+and it was wrong for an instructive reason — every measurement behind it was
+taken through the sensor's *binned* mode, which averages IR pixels together
+with colour ones and destroys the very structure being looked for.
 
 ## Status
 
@@ -40,13 +60,14 @@ physically sensible for the room.
 
 | | before | after |
 |---|---|---|
-| works at all | no driver claimed the ACPI id | 1280x720, ~28 fps |
+| works at all | no driver claimed the ACPI id | 1280x720, 30.7 fps |
 | white balance (linear R/G) | 0.372 | 1.009 |
 | colour cast | 34% saturation on white paper | ~6% |
 | colour temperature | 6752 K indoors (nonsense) | 3139 K (correct) |
 | red and blue | transposed | correct |
 | black floor on a lit scene | `(70, 50, 144)` violet | `(28, 31, 5)` |
 | debayer | CPU, ~13 ms/frame with a CCM | GPU, no stutter |
+| full resolution | assumed too slow | 2584x1944 at 29.95 fps |
 
 Those are single measurements on lit white paper; they move with the scene. See
 [What step 6 should print](#what-step-6-should-print) for the ranges to expect.
@@ -524,6 +545,12 @@ differs:
 | `try-ccm.py` | the renderer behind it; `--matrix <spec>` prints coefficients |
 | `install-ccm.sh` | install a matrix and/or raise the black level |
 | `set-saturation.sh` | the live saturation knob (needs a CCM installed first) |
+| `check-rgbir.sh` | prove the mosaic is 4x4 RGB-IR, not 2x2 Bayer, from raw pixels |
+| `rgbir-proof.sh` | demosaic one raw frame both ways, side by side; saves the raw |
+| `rgbir-offline.py` | try mosaic phases and IR subtraction on a saved raw, no hardware |
+| `rgbir-pipeline.py` | the full proposed chain using Intel's own tuning data |
+| `bench-fullres.sh` | frame rate at binned vs full resolution, GPU and CPU |
+| `diag-fullres.sh` | what sizes libcamera actually offers, when negotiation fails |
 | `check-boot.sh` | IPU6 firmware timing and probe order after a reboot |
 | `check-camera.sh` | end-to-end state: modules, i2c clients, media graph, nodes |
 | `test-sensor.sh`, `test-load.sh` | load the modules and read the chip id by hand |
@@ -552,7 +579,13 @@ Measurement logs from this machine are in `data/`.
 
 ## Upstream status
 
-Nothing merged yet.
+**The kernel series was submitted on 2026-08-09** and is on the lists:
+
+  https://lore.kernel.org/linux-media/20260809042540.15849-1-adee.sahan@gmail.com/
+
+Nothing merged yet. The libcamera half is deliberately held back until the
+kernel series settles, because how linux-media responds to the RGB-IR
+disclosure shapes how the libcamera side should be framed.
 
 | patch | destination |
 |---|---|
@@ -563,13 +596,56 @@ Nothing merged yet.
 | `libcamera/ov5675.yaml` black level | libcamera-devel |
 | `upstream-libcamera/0001-*` sensor delays | libcamera-devel |
 | `Saturation` inert without a `Ccm` (report only) | libcamera-devel |
-| GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable as-is** - needs a board-specific key |
+| GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable** - a workaround, see below |
+
+The GBRG change is a workaround, not a fix, and should not be sent anywhere.
+The sensor is RGB-IR (defect 5); GBRG merely puts real red into the red channel
+at half the positions, which is why it beats the alternative. The better of two
+wrong answers.
+
+**The real fix needs an ABI addition first.** There is no RGB-IR media bus code
+in mainline V4L2 - 36 Bayer codes, none for an IR mosaic - and libcamera's
+`BayerFormat` models 2x2 by construction. This is not specific to this sensor:
+`ox05b1s` declares `SGRBG10` for an RGB-IR part of the same class and
+resolution, and TI carries 4x4 RGB-IR formats in their vendor tree for the
+OV2312 and OX05B1S which never reached mainline. The next step is an RFC to
+linux-media proposing those codes, aligned with TI's naming rather than
+inventing a second convention.
 
 `upstream-libcamera/AWB-BUG-REPORT.md` writes up all four libcamera defects
 with measurements. Its EGL section states which explanations have been *ruled
 out* as well as what was observed - an earlier draft asserted a mechanism that
 turned out to be wrong, and reporting a confident wrong cause is worse than
 reporting an honest observation.
+
+## Work in progress: RGB-IR support
+
+`libcamera-rgbir/` holds the first piece of a proper fix: a converter turning
+the 4x4 RGB-IR mosaic into a half-resolution 2x2 Bayer image, so libcamera's
+existing debayer, statistics, AWB and CCM all work unmodified. That is the
+architecture Intel's own IPU6 hardware uses (its block is called `x2b_rgbir`).
+
+Half resolution is not a compromise. A 4x4 RGB-IR cell holds exactly two red
+and two blue pixels, and a 2x2 Bayer cell at half resolution needs exactly one
+of each, so chroma maps across with nothing discarded. Green averages four into
+one - the same reduction the sensor's binned mode already performs, except
+binning averages IR in with colour and this does not.
+
+Validated against the Python reference on a real captured frame, agreeing to
+0.0002 in channel ratios (`libcamera-rgbir/check.sh`). It is not yet wired into
+libcamera; the remaining work is buffer plumbing in `SoftwareIsp`, telling
+libcamera the sensor is RGB-IR at all, and the pipeline handler accepting
+full-res in with half-res out.
+
+**Frame rate is not the obstacle** - full resolution measured at 29.95 fps
+against 30.69 at 1280x720, so four times the pixels cost nothing
+(`tools/bench-fullres.sh`).
+
+[`docs/aiqb-format.md`](docs/aiqb-format.md) documents how Intel's `.aiqb`
+tuning files decode - lens shading, colour matrices and the infrared model -
+and where to get the struct definitions, which Intel publishes. The tuning
+files themselves are proprietary and are deliberately not in this repository;
+extract them from a Windows install as described there.
 
 ## Licence
 
