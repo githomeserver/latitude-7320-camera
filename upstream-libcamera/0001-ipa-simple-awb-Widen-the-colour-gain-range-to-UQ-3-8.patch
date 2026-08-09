@@ -1,4 +1,4 @@
-From af2093fab09e87e572146fa38e07ab246bd9a264 Mon Sep 17 00:00:00 2001
+From 77457e60b746480ef2c1705706aa9a3f5b17ae5d Mon Sep 17 00:00:00 2001
 From: Sahan Nissanka <adee.sahan@gmail.com>
 Date: Sun, 9 Aug 2026 17:00:56 +1000
 Subject: [PATCH] ipa: simple: awb: Widen the colour gain range to UQ<3, 8>
@@ -26,7 +26,6 @@ Widen the format to UQ<3, 8>, which raises the ceiling to 7.996 and leaves
 headroom for similarly red-weak sensors.
 
 Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---
  src/ipa/simple/algorithms/awb.h | 10 ++++++----
  1 file changed, 6 insertions(+), 4 deletions(-)
