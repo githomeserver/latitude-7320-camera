@@ -191,3 +191,50 @@ The CPU column is not trusted: it contradicts an earlier in-service
 measurement of 12.6 ms/frame at 1296x972, which would predict ~20 fps at 5 MP.
 The benchmark uses fakesink and so excludes the relay's v4l2sink, conversion
 and loopback costs. Unexplained; the GPU figure is the one the plan rests on.
+
+## First integration attempt failed (2026-08-09)
+
+`tools/install-rgbir.sh` builds and installs cleanly, but the resulting
+picture was **worse**: more magenta, plus lag, black frames and white frames.
+Reverted with `install-rgbir.sh disable`, which restored the working pipeline.
+Two separate problems, and they need separating before another attempt.
+
+**1. Performance, and this one was predicted.** The CPU now does a 5 MP
+pre-pass *and* a 5 MP debayer *and* a 5 MP to 720p scale, every frame. The
+lag, black frames and white frames are all consistent with the pipeline
+missing its deadline and frames being dropped or delivered incomplete.
+
+`tools/bench-fullres.sh` reported the CPU debayer managing 29.95 fps at
+2584x1944, which was recorded at the time as **not trusted** - it contradicts
+an in-service measurement of 12.6 ms/frame at 1296x972, which predicts ~20 fps
+at 5 MP before any pre-pass is added. That scepticism looks justified. The
+benchmark uses `fakesink`, so it excludes the relay's v4l2sink, the format
+conversion and the loopback, and it excludes the scaler this configuration
+adds.
+
+**Consequence: the pre-pass belongs in the EGL shader, not the CPU debayer.**
+The GPU path is what runs today at 30 fps and it is where the work has to go.
+That is a bigger change than hooking `DebayerCpu::process()` - the shader
+reads the mosaic directly, so it means a new fragment shader variant rather
+than a buffer transform - but the CPU route appears to be a dead end on this
+hardware.
+
+**2. Magenta, cause not established.** Magenta means green low relative to red
+and blue. Candidates, none yet tested:
+
+- **Crop phase.** libcamera's stream is 2584x1944 against the sensor's
+  2592x1944, so it crops 8 columns. The conversion runs from the buffer origin
+  over `inputCfg.size`, but `DebayerCpu::process2()` then offsets into that
+  buffer by `window_.x/y`. If `window_.x` is not a multiple of 4 the 4x4 cell
+  phase shifts under the debayer and the channel assignment is wrong. This is
+  the first thing to check - print `window_` and `inputCfg.size` and see.
+- **Bayer order.** The code derives GBRG from the declared `SGBRG10`. If the
+  emitted order is wrong, red and blue transpose - though that would look
+  swapped rather than magenta.
+- **Black level.** Hardcoded 64 in the pre-pass. Wrong here would shift all
+  three channels, but not obviously toward magenta.
+
+**Not yet ruled out and worth checking first**, because it is cheap: whether
+the `LIBCAMERA_RGBIR` log line appeared at all. If the pre-pass never ran,
+the magenta is simply what full-resolution capture looks like through the
+existing 2x2 misreading, and only the performance problem is real.
