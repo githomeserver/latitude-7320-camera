@@ -47,8 +47,13 @@ bench() {  # $1=w $2=h $3=label
     b=$(run "$1" "$2" 160)
     fps=$(echo "scale=2; 120 / ($b - $a)" | bc 2>/dev/null)
     # A negative or absurd value means one run failed or the timeout hit.
-    if [ -z "$fps" ] || [ "$(echo "$fps <= 0 || $fps > 200" | bc)" = "1" ]; then
-        echo "FAILED (40buf ${a}s, 160buf ${b}s)"
+    # Distinguish "negotiation failed instantly" from "ran, but slowly". An
+    # earlier version reported both as FAILED, which hid the fact that a size
+    # 8 pixels wider than libcamera offers was simply being rejected.
+    if [ "$(echo "$b < 1.0" | bc)" = "1" ]; then
+        echo "NOT NEGOTIATED (exited in ${b}s - size rejected, nothing captured)"
+    elif [ -z "$fps" ] || [ "$(echo "$fps <= 0 || $fps > 200" | bc)" = "1" ]; then
+        echo "UNCLEAR (40buf ${a}s, 160buf ${b}s)"
     else
         printf 'stable %6.2f fps   (40buf %.1fs, 160buf %.1fs)\n' "$fps" "$a" "$b"
     fi
@@ -64,7 +69,8 @@ for mode in gpu cpu; do
         echo "== GPU debayer (current default) =="
     fi
     bench 1280 720   "1280x720 (binned, now)"
-    bench 2592 1944  "2592x1944 (RGB-IR needs this)"
+    bench 2560 1600  "2560x1600 (libcamera default)"
+    bench 2584 1944  "2584x1944 (max offered)"
 done
 
 echo

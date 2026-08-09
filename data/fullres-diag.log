@@ -1,0 +1,72 @@
+== stopping v4l2-relayd ==
+
+=========== sensor modes the kernel driver offers ===========
+-- /dev/v4l-subdev8
+ioctl: VIDIOC_SUBDEV_ENUM_FRAME_SIZE (pad=0,stream=0)
+ioctl: VIDIOC_SUBDEV_ENUM_FRAME_SIZE (pad=0,stream=0)
+
+=========== what libcamera reports for the camera ===========
+[1:29:20.202269469] [11922]  INFO Camera camera_manager.cpp:340 libcamera v0.7.0
+[1:29:20.219936298] [11925]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/local/share/libcamera/ipa/simple/ov5675.yaml
+[1:29:20.220154271] [11925]  INFO Camera camera_manager.cpp:223 Adding camera '\_SB_.PC00.LNK0' for pipeline handler simple
+Available cameras:
+1: Internal front camera (\_SB_.PC00.LNK0)
+--- stream formats/sizes:
+[1:29:20.319701518] [11928]  INFO Camera camera_manager.cpp:340 libcamera v0.7.0
+[1:29:20.340954584] [11931]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/local/share/libcamera/ipa/simple/ov5675.yaml
+[1:29:20.341190728] [11931]  INFO Camera camera_manager.cpp:223 Adding camera '\_SB_.PC00.LNK0' for pipeline handler simple
+Using camera \_SB_.PC00.LNK0 as cam0
+Control: [inout] libcamera::Contrast: [0.000000..2.000000]
+0: 2584x1944-ABGR8888/sRGB
+ * Pixelformat: ABGR8888 (2x2)-(2584x1944)/(+2,+2)
+  - 160x120
+  - 240x160
+  - 320x240
+  - 400x240
+  - 480x320
+  - 640x360
+  - 640x480
+  - 720x480
+  - 768x480
+  - 854x480
+  - 720x576
+  - 800x600
+  - 960x540
+  - 1024x576
+  - 960x640
+  - 1024x600
+  - 1024x768
+  - 1280x720
+  - 1152x864
+  - 1280x800
+  - 1360x768
+  - 1366x768
+  - 1440x900
+
+=========== negotiation attempt at 2592x1944 ===========
+Setting pipeline to PAUSED ...
+[1:29:20.554862850] [11941]  INFO Camera camera_manager.cpp:340 libcamera v0.7.0
+[1:29:20.574926643] [11946]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/local/share/libcamera/ipa/simple/ov5675.yaml
+[1:29:20.575109400] [11946]  INFO Camera camera_manager.cpp:223 Adding camera '\_SB_.PC00.LNK0' for pipeline handler simple
+Pipeline is live and does not need PREROLL ...
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+New clock: GstSystemClock
+ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Internal data stream error.
+Additional debug info:
+../src/gstreamer/gstlibcamerasrc.cpp(851): gst_libcamera_src_task_enter (): /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0:
+streaming stopped, reason not-negotiated (-4)
+Details:
+details, flow-return=(int)-4;
+Execution ended after 0:00:00.000310066
+Setting pipeline to NULL ...
+Freeing pipeline ...
+
+=========== unconstrained (let libcamera choose) ===========
+/GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0.GstLibcameraPad:src: caps = video/x-raw, format=(string)RGBA, width=(int)2560, height=(int)1600, colorimetry=(string)sRGB, framerate=(fraction)30/1
+/GstPipeline:pipeline0/GstIdentity:identity0.GstPad:src: caps = video/x-raw, format=(string)RGBA, width=(int)2560, height=(int)1600, colorimetry=(string)sRGB, framerate=(fraction)30/1
+/GstPipeline:pipeline0/GstFakeSink:fakesink0.GstPad:sink: caps = video/x-raw, format=(string)RGBA, width=(int)2560, height=(int)1600, colorimetry=(string)sRGB, framerate=(fraction)30/1
+/GstPipeline:pipeline0/GstIdentity:identity0.GstPad:sink: caps = video/x-raw, format=(string)RGBA, width=(int)2560, height=(int)1600, colorimetry=(string)sRGB, framerate=(fraction)30/1
+[1:29:20.683227869] [11960]  INFO eGL egl.cpp:308 EGL: EGL_EXTENSIONS: EGL_ANDROID_blob_cache EGL_ANDROID_native_fence_sync EGL_EXT_config_select_group EGL_EXT_create_context_robustness EGL_EXT_image_dma_buf_import EGL_EXT_image_dma_buf_import_modifiers EGL_EXT_protected_content EGL_EXT_query_reset_notification_strategy EGL_EXT_surface_compression EGL_IMG_context_priority EGL_KHR_cl_event2 EGL_KHR_config_attribs EGL_KHR_context_flush_control EGL_KHR_create_context EGL_KHR_create_context_no_error EGL_KHR_fence_sync EGL_KHR_get_all_proc_addresses EGL_KHR_gl_colorspace EGL_KHR_gl_renderbuffer_image EGL_KHR_gl_texture_2D_image EGL_KHR_gl_texture_3D_image EGL_KHR_gl_texture_cubemap_image EGL_KHR_image_base EGL_KHR_no_config_context EGL_KHR_partial_update EGL_KHR_reusable_sync EGL_KHR_surfaceless_context EGL_EXT_pixel_format_float EGL_KHR_wait_sync EGL_MESA_configless_context EGL_MESA_gl_interop EGL_MESA_image_dma_buf_export EGL_MESA_query_driver EGL_MESA_x11_native_visual_id 
+
+== restarting v4l2-relayd ==
