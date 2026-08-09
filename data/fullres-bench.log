@@ -1,0 +1,15 @@
+== stopping v4l2-relayd ==
+
+== GPU debayer (current default) ==
+  1280x720 (binned, now) stable  30.69 fps   (40buf 1.8s, 160buf 5.7s)
+  2560x1600 (libcamera default) stable  29.96 fps   (40buf 1.8s, 160buf 5.8s)
+  2584x1944 (max offered) stable  29.95 fps   (40buf 1.8s, 160buf 5.8s)
+
+== CPU debayer ==
+  1280x720 (binned, now) stable  29.96 fps   (40buf 1.7s, 160buf 5.7s)
+  2560x1600 (libcamera default) stable  29.96 fps   (40buf 1.7s, 160buf 5.7s)
+  2584x1944 (max offered) stable  29.95 fps   (40buf 1.7s, 160buf 5.7s)
+
+The full-res figure is the budget an RGB-IR pre-pass has to fit inside.
+
+== restarting v4l2-relayd ==

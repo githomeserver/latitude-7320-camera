@@ -166,3 +166,28 @@ numbers extracted here are facts about how this specific camera module behaves,
 which is the sort of interoperability information a driver needs. Do not commit
 the `.aiqb` files themselves to this repository, and do not paste extracted
 tables into GPL sources without thinking about provenance first.
+
+
+## Full-resolution throughput (measured 2026-08-09)
+
+RGB-IR requires the unbinned mode, which is 4x the pixels we run today. It is
+not a bottleneck:
+
+```
+GPU  1280x720    30.69 fps      CPU  1280x720    29.96 fps
+GPU  2560x1600   29.96 fps      CPU  2560x1600   29.96 fps
+GPU  2584x1944   29.95 fps      CPU  2584x1944   29.95 fps
+```
+
+Measured from the slope of a 40-buffer and a 160-buffer run so pipeline
+startup cancels out. The sensor runs at 30 fps and nothing downstream limits
+it, so **full resolution costs no frame rate**.
+
+Note libcamera's maximum is **2584x1944**, not the sensor's 2592x1944 -
+`(2x2)-(2584x1944)/(+2,+2)`. Requesting 2592 is rejected outright with
+`not-negotiated`. The 8-column crop preserves the 4x4 mosaic phase.
+
+The CPU column is not trusted: it contradicts an earlier in-service
+measurement of 12.6 ms/frame at 1296x972, which would predict ~20 fps at 5 MP.
+The benchmark uses fakesink and so excludes the relay's v4l2sink, conversion
+and loopback costs. Unexplained; the GPU figure is the one the plan rests on.
