@@ -471,11 +471,19 @@ Measured on a flat field (one uniform wall filling the frame):
 ```
               brightness   linear B/G
 centre            237         1.11
-edges         ~165 (-31%)   1.86 - 1.99
+edges             ~165        1.86 - 1.99
 ```
 
-Brightness falls off 31% into the corners, and **B/G varies 1.8x across the
-frame** - blue is nearly twice as strong at the edges as in the middle. That is
+Those brightness figures are 8-bit gamma-encoded. **In linear light, which is
+what a shading gain corrects, the corners are at 45% of centre and need a
+2.22x gain** - an earlier version of this file called it "31% falloff", which
+was the gamma-encoded difference and understated it badly. Separately,
+**B/G varies 1.8x across the frame** - blue is nearly twice as strong at the
+edges as in the middle.
+
+Intel's own tuning file for this module ships lens shading tables that agree:
+2.40x at the equivalent radius, within 8% of our measurement, from a completely
+independent source. See [docs/aiqb-format.md](docs/aiqb-format.md). That is
 an IR-cut filter behaving as interference filters do: its passband shifts with
 the angle of incidence, so off-axis rays get a different colour response.
 
@@ -487,8 +495,12 @@ and held objects are.
 libcamera's simple IPA has no lens shading algorithm at all - its algorithms
 are `adjust`, `agc`, `awb`, `blc` and `ccm` - so this is not a setting that can
 be turned on. Fixing it means writing a new IPA algorithm plus a spatial gain
-map in the debayer. `data/` has the flat-field capture needed to build the
-correction table.
+map in the debayer.
+
+**The correction tables now exist.** Intel's tuning for this module contains
+per-channel 63x47 gain grids - five channels, the fifth being infrared - in
+1/2048 fixed point. Decoding is documented in
+[docs/aiqb-format.md](docs/aiqb-format.md).
 
 ## Diagnostics
 
