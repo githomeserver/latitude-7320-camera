@@ -112,7 +112,18 @@ def main():
     fmt = (fmt[0], 2592, 1944)
     msd.setup_pipeline(sname, csi, cpad, cap_ent, fmt)
 
-    cap = msd.Capture(node, want=(fmt[1], fmt[2]))
+    # The capture node's pixel format must correspond to the subdev mbus code
+    # or IPU6 link validation fails STREAMON with EPIPE.
+    PIXFMT = {"SGRBG10_1X10": "BA10", "SGBRG10_1X10": "GB10",
+              "SBGGR10_1X10": "BG10", "SRGGB10_1X10": "RG10"}
+    pf = PIXFMT.get(fmt[0])
+    if not pf:
+        sys.exit(f"unhandled mbus code {fmt[0]}")
+    cap = msd.Capture(node, want=(fmt[1], fmt[2]), pixfmt=pf)
+    print(f"pixfmt   {pf} (from {fmt[0]}); node reports {cap.fourcc}")
+    if cap.fourcc != pf:
+        sys.exit(f"ERROR: node negotiated {cap.fourcc}, not {pf}. "
+                 "Link validation would fail.")
     if (cap.w, cap.h) != (2592, 1944):
         sys.exit(f"ERROR: got {cap.w}x{cap.h}, need 2592x1944 (unbinned).\n"
                  "A binned frame cannot answer this question.")

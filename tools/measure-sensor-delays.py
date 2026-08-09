@@ -273,7 +273,7 @@ def fourcc(s):
 
 
 class Capture:
-    def __init__(self, node, want=None):
+    def __init__(self, node, want=None, pixfmt="BA10"):
         self.fd = os.open(node, os.O_RDWR)
         f = Format()
         f.type = BUF_TYPE_VIDEO_CAPTURE
@@ -281,14 +281,21 @@ class Capture:
 
         # media-ctl propagates subdev formats, but the video node's own format
         # is set separately and may be stale after the graph was reconfigured.
+        #
+        # pixfmt must correspond to the subdev's mbus code or IPU6 link
+        # validation rejects the pipeline and VIDIOC_STREAMON fails EPIPE.
+        # This used to be hardcoded BA10 (SGRBG10) and only worked by accident:
+        # at the binned size the node's format already matched, so this branch
+        # never ran. Requesting a different size took the branch and set a
+        # pixel format that disagreed with an SGBRG10 subdev.
         if want and (f.fmt.pix.width, f.fmt.pix.height) != want:
             f.fmt.pix.width, f.fmt.pix.height = want
-            f.fmt.pix.pixelformat = fourcc("BA10")   # V4L2_PIX_FMT_SGRBG10
+            f.fmt.pix.pixelformat = fourcc(pixfmt)
             f.fmt.pix.field = 1                      # NONE
             try:
                 fcntl.ioctl(self.fd, VIDIOC_S_FMT, f)
             except OSError as e:
-                print(f"    S_FMT {want[0]}x{want[1]} BA10 failed: {e}")
+                print(f"    S_FMT {want[0]}x{want[1]} {pixfmt} failed: {e}")
             fcntl.ioctl(self.fd, VIDIOC_G_FMT, f)
 
         self.w, self.h = f.fmt.pix.width, f.fmt.pix.height
