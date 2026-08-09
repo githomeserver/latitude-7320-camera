@@ -54,9 +54,10 @@ with colour ones and destroys the very structure being looked for.
 
 ## Status
 
-Working: 1280x720 at ~28 fps in Firefox, Chromium, and anything else that opens
-`/dev/video0`. White balance is correct and the estimated colour temperature is
-physically sensible for the room.
+Working: 1280x720 at ~30 fps in Firefox, Chromium, and anything else that opens
+`/dev/video0`. Greys are neutral. Colour accuracy is limited by the sensor
+being RGB-IR while the pipeline reads it as Bayer - see
+[defect 5](#5-the-sensor-is-rgb-ir-not-bayer-at-all-kernel--root-cause).
 
 | | before | after |
 |---|---|---|
