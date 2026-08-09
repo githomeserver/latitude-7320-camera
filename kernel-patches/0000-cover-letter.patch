@@ -9,12 +9,28 @@ intel/ipu6-drivers issues #24 (2022) and #402 (2025), the latter blocked
 waiting for "OV5678 sensor specifications (clock rates, power requirements)".
 
 Those specifications turned out not to be needed. ACPI describes the front
-sensor as OVTI5678 and no driver has ever claimed that id, but the part is an
-OV5675: once powered it reports chip id 0x005675 at register 0x300a, and the
-values ov5675.c is sensitive to were read from the machine's ACPI SSDB before
-the sensor was ever powered and both agree - 2 CSI-2 data lanes and a
-19.2 MHz external clock. The advertised 5MP also matches the driver's native
-2592x1944. So no new sensor driver and no new register tables are required.
+sensor as OVTI5678 and no driver has ever claimed that id. The part reports
+chip id 0x005675 at register 0x300a, and the values ov5675.c is sensitive to
+were read from the machine's ACPI SSDB before the sensor was ever powered and
+both agree - 2 CSI-2 data lanes and a 19.2 MHz external clock. The advertised
+5MP also matches the driver's native 2592x1944. So no new sensor driver and no
+new register tables are required to make it stream.
+
+One caveat, set out in full in 2/3: this part is not a plain Bayer sensor. It
+carries a 4x4 RGB-IR colour filter array, one pixel in four being infrared.
+That is confirmed from Intel's own Windows IPU6 configuration for this exact
+module, from measurements on the sensor at full resolution, and from the
+module's tuning data, which agree with each other. The SGRBG10 that ov5675
+declares is therefore inaccurate, and colour is wrong in a way white balance
+cannot correct.
+
+That cannot be fixed in this series: the V4L2 ABI has no RGB-IR media bus
+code at all, and ox05b1s already carries the same inaccuracy for an RGB-IR
+sensor of the same class and resolution. I intend to propose RGB-IR media bus
+codes separately. Until such support exists, this series takes hardware that
+does not work at all to hardware that works with imperfect colour, which
+seemed worth having in the meantime. I am happy to hold 2/3 if maintainers
+would rather not add the id before the format can be described honestly.
 
 That leaves three small pieces:
 
@@ -49,10 +65,10 @@ Sahan Nissanka (3):
   media: i2c: ov5675: Add OVTI5678 ACPI id
   media: ipu-bridge: Add sensor configuration for OV5675 (OVTI5678)
 
- drivers/media/i2c/ov5675.c                    |  7 ++
+ drivers/media/i2c/ov5675.c                    | 11 ++
  drivers/media/pci/intel/ipu-bridge.c          |  2 +
  .../x86/intel/int3472/tps68470_board_data.c   | 92 +++++++++++++++++++
- 3 files changed, 101 insertions(+)
+ 3 files changed, 105 insertions(+)
 
 -- 
 2.53.0
