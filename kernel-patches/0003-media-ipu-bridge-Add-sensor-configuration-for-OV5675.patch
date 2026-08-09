@@ -1,5 +1,5 @@
 From 5f31335868283f39b6e99a2c0d703419209b509c Mon Sep 17 00:00:00 2001
-From: Sahan Nissanka <sanoptional@gmail.com>
+From: Sahan Nissanka <adee.sahan@gmail.com>
 Date: Sat, 8 Aug 2026 18:52:40 +1000
 Subject: [PATCH 3/3] media: ipu-bridge: Add sensor configuration for OV5675
  (OVTI5678)
@@ -22,7 +22,7 @@ the media graph:
   intel-ipu6 0000:00:05.0: Found supported sensor OVTI8856:00
   intel-ipu6 0000:00:05.0: Connected 2 cameras
 
-Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
 ---
  drivers/media/pci/intel/ipu-bridge.c | 2 ++
  1 file changed, 2 insertions(+)

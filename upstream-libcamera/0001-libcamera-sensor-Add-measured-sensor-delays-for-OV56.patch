@@ -1,4 +1,4 @@
-From: Sahan Nissanka <sanoptional@gmail.com>
+From: Sahan Nissanka <adee.sahan@gmail.com>
 Date: Sat, 8 Aug 2026 11:05:00 +1000
 Subject: [PATCH] libcamera: sensor: Add measured sensor delays for OV5675
 
@@ -46,7 +46,7 @@ These values match every other OmniVision sensor in this file that has
 measured delays (ov5647, ov7251, ov9281, ov08d10, ov64a40 are all 2/2/2/2),
 which is reassuring but was not assumed - the measurement was taken first.
 
-Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
 ---
  src/libcamera/sensor/camera_sensor_properties.cpp | 7 ++++++-
  1 file changed, 6 insertions(+), 1 deletion(-)

@@ -1,5 +1,5 @@
 From b842397126a937259ed3ac07a19d4439d2c02031 Mon Sep 17 00:00:00 2001
-From: Sahan Nissanka <sanoptional@gmail.com>
+From: Sahan Nissanka <adee.sahan@gmail.com>
 Date: Sat, 8 Aug 2026 18:52:40 +1000
 Subject: [PATCH 2/3] media: i2c: ov5675: Add OVTI5678 ACPI id
 
@@ -53,7 +53,7 @@ One further note for anyone building on this: the sensor's binned
 destroys the mosaic. Only the full resolution mode is meaningful for an
 RGB-IR aware pipeline.
 
-Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
 ---
  drivers/media/i2c/ov5675.c | 11 +++++++++++
  1 file changed, 11 insertions(+)

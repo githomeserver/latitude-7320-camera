@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$HERE/../upstream"
 
 NAME="${1:-}"
-EMAIL="${2:-sanoptional@gmail.com}"
+EMAIL="${2:-adee.sahan@gmail.com}"
 
 if [ -z "$NAME" ]; then
     echo "usage: $0 \"Your Real Name\" [you@example.org]" >&2

@@ -1,4 +1,4 @@
-From: Sahan Nissanka <sanoptional@gmail.com>
+From: Sahan Nissanka <adee.sahan@gmail.com>
 Subject: [PATCH] ipa: simple: awb: Remove the hardcoded 4.0 colour gain clamp
 
 The grey-world AWB clamps both colour gains at 4.0. Any sensor whose red
@@ -21,7 +21,7 @@ degrees, i.e. cyan, at 34% saturation on a white wall.
 Drop the ceiling and keep only the division-by-zero guard, matching what
 AwbGrey in libipa does.
 
-Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
+Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
 
 --- a/src/ipa/simple/algorithms/awb.cpp
 +++ b/src/ipa/simple/algorithms/awb.cpp
