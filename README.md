@@ -56,7 +56,7 @@ OV8856 is **not** addressed here.
 
 ## What was actually broken
 
-Seven independent faults across three layers. Each had to be fixed before the
+Eight independent faults across three layers. Each had to be fixed before the
 next became visible, which is why this took a while - and why the diagnostic
 scripts in `tools/` may be more useful to you than the patches.
 
@@ -121,7 +121,59 @@ it runs at 28.
 
 → `tools/fix-browser-camera.sh`, `tools/tune-relay-pipeline.sh`
 
-### 5. The CFA phase is GBRG, not the GRBG the driver declares (kernel)
+### 5. The sensor is RGB-IR, not Bayer at all (kernel) — ROOT CAUSE
+
+**Confirmed 2026-08-09 and it supersedes the GBRG explanation below.** Intel's
+own pipeline configuration for this exact module - `graph_settings_OV5678_`
+`0BF501T3_TGL.xml`, matching this machine's ACPI `_DDN` - declares
+`bayer_order="GIGI_RGBG_GIGI_BGRG"` and `sensor_type="RGB_IR"`. The rear OV8856
+in the same directory says plain `GRBG`.
+
+```
+G I G I        one pixel in four is INFRARED
+R G B G
+G I G I
+B G R G
+```
+
+Measured directly at 2592x1944 on a red subject (`tools/check-rgbir.sh`),
+black-level corrected, 10-bit counts:
+
+```
+G  8 positions   mean 116.1   spread 3.4
+I  4 positions   mean  14.2   spread 0.1
+R  2 positions   mean  89.7   spread 0.5
+B  2 positions   mean  73.3   spread 0.1
+```
+
+Positions a 2x2 Bayer calls one channel differ by **18%**; the IR pair agrees
+to **0.4%**. Not lens shading - the positions interleave at pixel level across
+the same sampling area.
+
+Read as 2x2 GBRG, which is what the patched driver declares:
+
+| declared channel | what it actually is |
+|---|---|
+| green | green |
+| **blue** | **pure infrared, at every position** |
+| **red** | real red and real blue, checkerboarded |
+
+That is the root cause of the whole colour effort: the ~4.9x blue gain was
+amplifying infrared at 12% of green; "blue" was anti-correlated with subject
+blue because infrared is (yellow reflects strongly in NIR); the CCM's blue row
+was unfittable because the channel was not a colour channel; and the red
+channel is an R/B spatial average, which is close to grey by construction.
+
+**Binning destroys the mosaic.** Intel lists exactly one mode, 2592x1944, where
+the plain-Bayer OV8856 gets several. Our pipeline runs the binned 1296x972
+mode, which averages IR in with colour. Any RGB-IR work must be full-res.
+
+Fixing this properly needs an RGB-IR demosaic, which libcamera's software ISP
+does not have - it handles 2x2 mosaics only. Note that dropping the IR rows
+does not leave a Bayer pattern either: rows 1 and 3 are `R G B G` and `B G R G`,
+with red and blue in the same row.
+
+### 5b. The GBRG workaround (superseded, still what ships here)
 
 `ov5675.c` hardcodes `MEDIA_BUS_FMT_SGRBG10_1X10` in three places. On this board
 red and blue are transposed, consistent with the module being mounted 180
@@ -395,12 +447,14 @@ find. Excluding shadow-corrupted dark patches made the blue row *worse*
 kept (`tools/solve-ccm.py`, `tools/make-ccm-target.py`) but do not expect a
 usable matrix from this sensor without better equipment than a tablet screen.
 
-**Blues stay weak, and that is mostly physics.** The sensor's native blue
-response is about 16% of green, and under warm indoor light there is little
-blue to reflect in the first place. A correctly white-balanced image is
-achievable; vivid blues are not. Pushing the blue coefficient higher trades
-directly against noise, because it amplifies the weakest channel. Daylight
-helps far more than any tuning value.
+**Blues are weak because of the demosaic, NOT the sensor or the lighting.**
+An earlier version of this file said the opposite - that ~16% native blue
+response and warm indoor light made vivid blues physically unavailable. That
+was wrong, and it was wrong because the channel being measured was infrared
+(defect 5). The same sensor under Windows renders a colour-swatch poster with
+vivid blues, magentas and yellows. Until an RGB-IR demosaic exists, blue is
+half a checkerboarded channel and will stay weak; that is a software limit
+with a known fix, not a hardware ceiling.
 
 **The rear OV8856 does not work.** Its rails are covered by the same board data,
 but its reset/powerdown GPIOs are unknown, and pins 3 and 4 belong to the front
