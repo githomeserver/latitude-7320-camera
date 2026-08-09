@@ -270,6 +270,14 @@ stock libcamera 0.7.0             R/G 0.372   B/G 0.897    saturation 34%
   Because the workaround is a colour correction, not `SOFTISP_MODE=cpu`, see
   [Colour tuning](#colour-tuning). → `tools/try-cpu-isp.sh`
 
+- **The gains are floored at 1.0 as well as capped**, by
+  `gainMin_ = std::max(Q::TraitsType::min, 1.0f)` (`libipa/awb.h:120`), even
+  though `UQ<2, 8>::min` is 0.0. Grey world holds green at 1.0, so a sensor
+  whose red is *stronger* than green would need a red gain below 1.0 and
+  cannot express it. Not reproduced here — this sensor is red-weak, the
+  opposite case — so it is reported as an observation from source, with no
+  patch. Reported, not fixed.
+
 ### 7. `Saturation` is silently inert without a CCM (libcamera)
 
 `Adjust` implements `controls::Saturation` by writing `combinedMatrix`, but
@@ -601,6 +609,7 @@ disclosure shapes how the libcamera side should be framed.
 | `libcamera/ov5675.yaml` black level | libcamera-devel |
 | `upstream-libcamera/0001-libcamera-sensor-*` sensor delays | libcamera-devel |
 | `Saturation` inert without a `Ccm` (report only) | libcamera-devel |
+| AWB gain floor of 1.0 (report only, unmeasured) | libcamera-devel |
 | GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable** - a workaround, see below |
 
 The GBRG change is a workaround, not a fix, and should not be sent anywhere.

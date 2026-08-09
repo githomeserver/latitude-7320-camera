@@ -1,5 +1,6 @@
-# Soft ISP: four colour defects found on an OV5675 (AWB gain clamp, black
-# level sensitivity, EGL debayer not applying AWB gains, inert Saturation)
+# Soft ISP: five colour defects found on an OV5675 (AWB gain ceiling and
+# floor, black level sensitivity, EGL debayer not applying AWB gains, inert
+# Saturation)
 
 Draft for libcamera-devel@lists.libcamera.org. Nothing has been sent.
 
@@ -21,8 +22,10 @@ master), and the EGL debayer does not apply AWB gains
 ## Summary
 
 The camera produced a strong cyan cast that no amount of configuration could
-shift. Chasing it turned up four separate problems, the first three of which masked
-each other: fixing any one alone changes little or nothing.
+shift. Chasing it turned up five separate problems, the first three of which
+masked each other: fixing any one alone changes little or nothing. The fifth
+was found by reading the code while re-checking the first against master, and
+is the only one not measured here.
 
 | # | Problem | Effect on output |
 |---|---------|------------------|
@@ -30,6 +33,7 @@ each other: fixing any one alone changes little or nothing.
 | 2 | Black level is guessed from the scene when no tuning file exists | computed red gain wrong (4.79 vs 6.01) |
 | 3 | The EGL debayer does not apply the AWB gains | correct gains never reach the pixels |
 | 4 | `Saturation` is inert unless the tuning file defines a `Ccm` | control accepted, silently ignored |
+| 5 | Colour gains are also floored at 1.0, which no format requires | a red-strong sensor cannot be balanced (not measured here) |
 
 Measured on lit white paper, in **linear** light (the sRGB transfer function is
 undone before averaging), R/G and B/G, where 1.000 is neutral:
@@ -204,6 +208,35 @@ an unrelated tuning entry and a public control.
 
 Either the control should be rejected when it cannot be honoured, or
 `Adjust` should be able to write `combinedMatrix` on its own.
+
+## 5. Colour gains cannot go below 1.0
+
+`AwbAlgorithm<Q>::init` takes the bounds from the fixed-point format, but
+raises the lower one to unity (`src/ipa/libipa/awb.h:120-121`):
+
+```c
+	gainMin_ = std::max(Q::TraitsType::min, 1.0f);
+	gainMax_ = Q::TraitsType::max;
+```
+
+`UQ<2, 8>::min` is 0.0, so the floor is not a limit of the format - the
+`std::max` imposes it. Every computed result is clamped to it at
+`src/ipa/libipa/awb.cpp:385`, the same line as defect 1.
+
+Grey world pins green at 1.0 (`AwbGrey::calculateAwb`, `awb_grey.cpp:88`) and
+expresses the whole balance in the red and blue gains. A sensor whose red
+response is *stronger* than green therefore needs a red gain below 1.0 to
+reach neutral, and has no way to express it: the gain clamps to 1.0, a red
+cast remains, and the algorithm reports success. The same applies to blue.
+
+The soft ISP's own comment describes the intended interval as
+`[0.0f, 3.999f]` (`src/ipa/simple/algorithms/awb.h:54-58`), which the floor
+contradicts.
+
+No patch is attached for this one, deliberately. I have not measured it - the
+sensor here is red-weak, the opposite case - and the bound is shared by every
+IPA that uses `AwbAlgorithm`, including rkisp1, where changing it would alter
+behaviour on hardware I cannot test. Flagging it rather than proposing a fix.
 
 ## Reproduction
 
