@@ -109,8 +109,9 @@ sensor whose red is *stronger* than green cannot be attenuated either.
 
 Two patches are attached, for the two trees:
 
-- Against master, widening the format to `UQ<3, 8>` (ceiling 7.996). Not
-  compile-tested - see Caveats.
+- Against master, widening the format to `UQ<3, 8>` (ceiling 7.996). Builds
+  clean on `62d4bfc45079` (`-Dpipelines=simple -Dipas=simple`, gcc 15.2), but
+  is not measured - see Caveats.
 - Against 0.7.0, removing the hardcoded clamp. This is the one actually
   measured here: with it applied the gain becomes live (4.73-4.79) and R/G
   moves 0.372 -> 0.551.
@@ -262,11 +263,13 @@ a while.
 - Native and post-ISP figures are separate captures of a static scene seconds
   apart, not the same frame.
 - Point 3 is an observation with a clean A/B, not a diagnosis.
-- Every measurement here was taken on 0.7.0. The master patch is reasoned from
-  the source and is neither compile-tested nor measured: the machine was a
-  loan and has gone back, so no further captures are possible on it. The
-  sensor figures it rests on (R/G 0.164 native, red gain 6.1 for neutral) are
-  properties of the sensor rather than of a libcamera version.
+- Every measurement here was taken on 0.7.0. The master patch compiles against
+  `62d4bfc45079` but has not been run: the machine was a loan and has gone
+  back, so no further captures are possible on it. Compiling confirms the
+  bound moves - `UQ<2,8>` gives `gainMax_` 3.99609 and `UQ<3,8>` gives 7.99609
+  against the real headers - but not that the resulting image is correct. The
+  sensor figures the patch rests on (R/G 0.164 native, red gain 6.1 for
+  neutral) are properties of the sensor rather than of a libcamera version.
 
 ## Attachments
 
