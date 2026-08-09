@@ -4,9 +4,10 @@ Date: Sat, 8 Aug 2026 18:52:40 +1000
 Subject: [PATCH 2/3] media: i2c: ov5675: Add OVTI5678 ACPI id
 
 The front camera of the Dell Latitude 7320 Detachable is described in
-ACPI as OVTI5678, and no driver has ever claimed that id. The part is an
-OV5675: once powered it reports chip id 0x005675 at register 0x300a,
-which is exactly what ov5675_identify_module() expects.
+ACPI as OVTI5678, and no driver has ever claimed that id. It reports
+chip id 0x005675 at register 0x300a, which is what
+ov5675_identify_module() expects, and it streams with this driver
+unmodified:
 
   ov5675 i2c-OVTI5678:00: chip id at 0x300a reads 0x005675
     reg 0x300a = 0x00  reg 0x300b = 0x56  reg 0x300c = 0x75
@@ -14,22 +15,54 @@ which is exactly what ov5675_identify_module() expects.
 The two other values this driver is sensitive to were read from the
 machine's ACPI SSDB before the sensor was ever powered, and both agree:
 L0NL = 2 data lanes (OV5675_DATA_LANES) and L0CK = 19200000 Hz
-(OV5675_XVCLK_19_2). The resolution matches too - the panel advertises a
-5MP front camera and this driver's native mode is 2592x1944.
+(OV5675_XVCLK_19_2). Native resolution matches at 2592x1944.
 
-With this id added the sensor binds and streams unmodified: libcamera
-lists it and capture runs at 2584x1944, 29.95 fps.
+With this id added the sensor binds and streams: libcamera lists it and
+capture runs at 2584x1944, 29.95 fps.
+
+This part is not a plain Bayer sensor, however, and the format this
+driver declares for it is inaccurate. It carries a 4x4 RGB-IR colour
+filter array, one pixel in four being infrared:
+
+    G I G I
+    R G B G
+    G I G I
+    B G R G
+
+Confirmed three ways. Intel's Windows IPU6 configuration for this exact
+module - matched by ACPI _DDN, so not a near relative - declares
+bayer_order="GIGI_RGBG_GIGI_BGRG" and sensor_type="RGB_IR". Measured on
+the sensor at full resolution, positions a 2x2 model treats as a single
+channel differ by 18% while the four infrared positions agree to 0.4%.
+And the module's Intel tuning data carries a 4x4 channel index map that
+agrees with both.
+
+Read as the SGRBG10 declared here, the "blue" channel is pure infrared
+and the "red" channel interleaves real red with real blue, so colour is
+wrong in a way no white balance can correct.
+
+This cannot be fixed in this driver: there is no RGB-IR media bus code
+in the V4L2 ABI. Nor is it unique to this part - ox05b1s declares
+SGRBG10 for an RGB-IR sensor of the same class and resolution. I intend
+to propose RGB-IR media bus codes separately. Until such support
+exists, this patch makes otherwise unusable hardware work, carrying the
+same known inaccuracy as the existing RGB-IR sensor support.
+
+One further note for anyone building on this: the sensor's binned
+1296x972 mode averages infrared pixels together with colour ones, which
+destroys the mosaic. Only the full resolution mode is meaningful for an
+RGB-IR aware pipeline.
 
 Signed-off-by: Sahan Nissanka <sanoptional@gmail.com>
 ---
- drivers/media/i2c/ov5675.c | 7 +++++++
- 1 file changed, 7 insertions(+)
+ drivers/media/i2c/ov5675.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
 
 diff --git a/drivers/media/i2c/ov5675.c b/drivers/media/i2c/ov5675.c
 index ea26df3..99dbf53 100644
 --- a/drivers/media/i2c/ov5675.c
 +++ b/drivers/media/i2c/ov5675.c
-@@ -1355,6 +1355,13 @@ static const struct dev_pm_ops ov5675_pm_ops = {
+@@ -1355,6 +1355,17 @@ static const struct dev_pm_ops ov5675_pm_ops = {
  #ifdef CONFIG_ACPI
  static const struct acpi_device_id ov5675_acpi_ids[] = {
  	{"OVTI5675"},
@@ -38,6 +71,10 @@ index ea26df3..99dbf53 100644
 +	 * as OVTI5678 in ACPI, but the part reports chip id 0x005675 and its
 +	 * SSDB agrees with this driver on both other values that matter:
 +	 * 2 CSI-2 data lanes and a 19.2 MHz external clock.
++	 *
++	 * Note this variant carries a 4x4 RGB-IR colour filter array, not the
++	 * 2x2 Bayer declared here, so colour is incorrect. There is currently
++	 * no RGB-IR media bus code to declare instead.
 +	 */
 +	{"OVTI5678"},
  	{}
