@@ -102,8 +102,19 @@ Both sensors declare an ACPI `_DEP` on the control logic, so until the PMIC
 driver probes successfully, **no i²c client is created for either sensor at
 all**. Nothing can bind to a device that does not exist.
 
-The GPIO and rail assignments match the Dell 7212 and Dell 5290: reset on
-`tps68470-gpio` 3, powerdown on 4, VSIO/AUX1/AUX2 feeding avdd/dvdd/dovdd.
+The rail assignment matches the Dell 7212 and Dell 5290 — VSIO/AUX1/AUX2 feeding
+avdd/dvdd/dovdd — but **the GPIO mapping does not**. Reset is on `tps68470-gpio`
+**5**, active low, and there is **no powerdown pin at all**: `ov5675.c` requests
+only `"reset"`, so any `"powerdown"` lookup is dead code. Pin 3, which the 7212
+and 5290 use for reset, is inert on this board.
+
+An earlier version of this file said reset on 3 and powerdown on 4, taken from
+that prior art and confirmed by the camera working. That was wrong, and wrong
+instructively: the sensor probes with **no pin assigned at all**, because the
+real reset line sits released by default. A wrong mapping is therefore invisible
+here. What establishes the mapping is making the probe *fail* on demand — hold
+line 5 low and the sensor stops identifying; hold line 3 low and nothing
+happens. Verified on two physical units, three trials per condition.
 Note the control logic here enumerates as `INT3472:07`, not `:05` as on the
 other Dell models — the lookup matches on DMI *and* device name, so this must
 be exact.
@@ -312,7 +323,7 @@ sudo apt install dkms build-essential "linux-headers-$(uname -r)" \
 ```sh
 # 1. kernel modules (board data + ov5675 ACPI id + ipu-bridge entry) via DKMS
 sudo tools/dkms-install.sh
-printf 'options intel_skl_int3472_tps68470 front_reset=3 front_powerdown=4 rail_map=1 rear_reset=-1 rear_powerdown=-1\n' \
+printf 'options intel_skl_int3472_tps68470 front_reset=5 front_powerdown=-1 rail_map=1 rear_reset=-1 rear_powerdown=-1\n' \
     | sudo tee /etc/modprobe.d/int3472-dell7320.conf
 sudo dracut --force --kver "$(uname -r)"      # also fixes the IPU6 firmware race
 sudo reboot
@@ -489,10 +500,17 @@ vivid blues, magentas and yellows. Until an RGB-IR demosaic exists, blue is
 half a checkerboarded channel and will stay weak; that is a software limit
 with a known fix, not a hardware ceiling.
 
-**The rear OV8856 does not work.** Its rails are covered by the same board data,
-but its reset/powerdown GPIOs are unknown, and pins 3 and 4 belong to the front
-sensor. The `ov8856` driver Ubuntu ships also does no power management at all on
-ACPI, and mainline's skips regulators and GPIOs when `is_acpi_node()`.
+**The rear OV8856 does not work.** Its rails are covered by the same board data.
+Its reset is reported to be `tps68470-gpio` 9 (`s_resetn`) and it has no
+powerdown pin — that comes from Charles Drolet, who has the same machine, and is
+not independently verified here. The `ov8856` driver Ubuntu ships also does no
+power management at all on ACPI, and mainline's skips regulators and GPIOs when
+`is_acpi_node()`, so the sensor needs those guards removed before any pin
+mapping matters. That change affects every ACPI ov8856 system, the Surface
+devices included, so it belongs in its own patch rather than folded into board
+data. Two further rear-camera defects are open: a black frame at full
+resolution (1920x1080 works), and power rails coming up on suspend — the latter
+only when the `dw9714` VCM is loaded, which the front module does not have.
 
 **`tools/hide-raw-ipu6-nodes.sh` makes `cam` need sudo**, because it takes the
 raw nodes out of the `video` group. That is the trade for a clean camera list;
