@@ -29,7 +29,18 @@
 
 set -eu
 
-CONF=/etc/v4l2-relayd.d/default.conf
+# The config path differs between installs. v4l2-relayd@.service reads
+#   EnvironmentFile=/etc/default/v4l2-relayd          (always)
+#   EnvironmentFile=-/etc/v4l2-relayd.d/%i.conf       (optional, per instance)
+# The OEM image this was written against shipped the per-instance file; a stock
+# Ubuntu install has only /etc/default/v4l2-relayd. Hardcoding the first made
+# both scripts fail with "No such file or directory" on a clean machine while
+# still reporting success for the steps that had run.
+CONF=""
+for c in /etc/v4l2-relayd.d/default.conf /etc/default/v4l2-relayd; do
+    [ -f "$c" ] && CONF="$c"
+done
+[ -n "$CONF" ] || { echo "ERROR: no v4l2-relayd config found" >&2; exit 1; }
 BAK="$CONF.before-libcamera"
 DROPIN_DIR=/etc/systemd/system/v4l2-relayd@.service.d
 DROPIN="$DROPIN_DIR/10-dma-heap.conf"
@@ -41,12 +52,23 @@ if [ "${1:-apply}" = "revert" ]; then
         cp -f "$BAK" "$CONF"
         echo "restored $CONF from $BAK"
     else
-        echo "no backup at $BAK, editing VIDEOSRC back to icamerasrc"
-        sed -i 's|^VIDEOSRC=.*|VIDEOSRC=icamerasrc|' "$CONF"
+        # Do NOT guess. The OEM image shipped icamerasrc, but a stock Ubuntu
+        # install ships videotestsrc, and writing the wrong one back leaves a
+        # machine whose camera silently shows a test pattern.
+        echo "no backup at $BAK - refusing to guess the original VIDEOSRC." >&2
+        echo "Current value is:" >&2
+        grep '^VIDEOSRC=' "$CONF" | sed 's/^/  /' >&2
+        echo "Set it by hand: icamerasrc on the Dell OEM image, videotestsrc on stock Ubuntu." >&2
+        exit 1
     fi
     rm -f "$DROPIN"
     rmdir "$DROPIN_DIR" 2>/dev/null || true
+    # Apply creates this, so revert must remove it - otherwise the relay keeps
+    # starting at boot against a reverted config.
+    rm -f /etc/systemd/system/v4l2-relayd.service.wants/v4l2-relayd@default.service
+    rmdir /etc/systemd/system/v4l2-relayd.service.wants 2>/dev/null || true
     systemctl daemon-reload
+    systemctl stop v4l2-relayd@default.service 2>/dev/null || true
     systemctl restart v4l2-relayd.service
     exit 0
 fi
@@ -85,10 +107,34 @@ echo "== new config =="
 cat "$CONF" | sed 's/^/  /'
 
 echo
-echo "== restarting v4l2-relayd =="
+echo "== starting the relay instance =="
+# v4l2-relayd.service is a oneshot stub (ExecStart=/bin/true) that exists only
+# so the template instances have something to be PartOf. The daemon itself runs
+# as v4l2-relayd@<name>.service. On the Dell OEM image something started an
+# instance; on stock Ubuntu nothing does - there is no udev rule and no .wants
+# entry - so restarting the stub "succeeds" while no relay ever runs and
+# /dev/video0 stays output-only. Start it, and make it survive a reboot.
+INSTANCE=v4l2-relayd@default.service
+WANTS=/etc/systemd/system/v4l2-relayd.service.wants
+
+mkdir -p "$WANTS"
+ln -sf /usr/lib/systemd/system/v4l2-relayd@.service "$WANTS/$INSTANCE"
+systemctl daemon-reload
+echo "  enabled at boot via $WANTS/$INSTANCE"
+
 systemctl restart v4l2-relayd.service
+systemctl restart "$INSTANCE"
 sleep 4
-systemctl is-active v4l2-relayd@default.service || true
+printf '  %-34s %s\n' "$INSTANCE" "$(systemctl is-active "$INSTANCE")"
+
+# The loopback advertises OUTPUT only until a producer attaches, so the
+# capture bit is the real check that the relay is feeding it.
+if v4l2-ctl -d /dev/video0 --info 2>/dev/null | grep -q 'Video Capture'; then
+    echo "  /dev/video0 reports Video Capture - a producer is attached"
+else
+    echo "  WARNING: /dev/video0 has no Video Capture capability." >&2
+    echo "  The loopback exists but nothing is feeding it; check the journal." >&2
+fi
 
 echo
 echo "== recent log =="
