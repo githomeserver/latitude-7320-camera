@@ -1,0 +1,31 @@
+=== libcamera AWB gain range, measured ===
+2026-08-15T12:07:21+10:00
+
+== baseline-UQ2-8 (master) ==
+  built 62d4bfc4 ipa: libipa: lsc: Specialize Interpolator for uint8_t
+  source declares AwbAlgorithm<UQ<2, 8>>
+    Means Vector { 69.2254, 123.887, 17.1391  }, gains Vector { 1.79647, 1.00000, 3.99609  }, temp 3211K
+    Means Vector { 69.6386, 124.522, 17.2935  }, gains Vector { 1.79480, 1.00000, 3.99609  }, temp 3212K
+    Means Vector { 69.5948, 124.475, 17.2972  }, gains Vector { 1.79355, 1.00000, 3.99609  }, temp 3212K
+    Means Vector { 68.9500, 123.436, 17.0601  }, gains Vector { 1.79289, 1.00000, 3.99609  }, temp 3211K
+    Means Vector { 67.9886, 121.819, 16.7027  }, gains Vector { 1.79266, 1.00000, 3.99609  }, temp 3210K
+    red  gain WANTED   1.792   APPLIED   1.797   (moved -0.011 over the window)
+    blue gain WANTED   7.304   APPLIED   3.996   (moved +0.000 over the window)
+         ^ pinned at the UQ<2,8> ceiling
+
+== patched-UQ3-8 (awb-gain-range) ==
+  built 77457e60 ipa: simple: awb: Widen the colour gain range to UQ<3, 8>
+  source declares AwbAlgorithm<UQ<3, 8>>
+    Means Vector { 65.5562, 118.398, 14.5947  }, gains Vector { 1.80577, 1.00000, 7.99609  }, temp 3189K
+    Means Vector { 65.5878, 118.415, 14.5861  }, gains Vector { 1.80570, 1.00000, 7.99609  }, temp 3189K
+    Means Vector { 65.5827, 118.442, 14.5922  }, gains Vector { 1.80576, 1.00000, 7.99609  }, temp 3189K
+    Means Vector { 65.6147, 118.433, 14.6013  }, gains Vector { 1.80561, 1.00000, 7.99609  }, temp 3189K
+    Means Vector { 65.5905, 118.448, 14.6067  }, gains Vector { 1.80566, 1.00000, 7.99609  }, temp 3189K
+    red  gain WANTED   1.806   APPLIED   1.806   (moved -0.000 over the window)
+    blue gain WANTED   8.118   APPLIED   7.996   (moved +0.000 over the window)
+         ^ pinned at the UQ<3,8> ceiling
+
+Read this as: the baseline pins red at 3.996 while asking for more,
+and the patched build delivers what grey world actually asked for.
+If the baseline did not pin, the scene was not red-weak enough and
+nothing has been demonstrated.
