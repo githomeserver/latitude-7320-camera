@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: CC0-1.0
+#
+# Tuning for the OV5675 with libcamera's software ISP.
+#
+# The only thing pinned here is the black level, and that alone is what fixes
+# the green cast on this sensor.
+#
+# Without a tuning file the BlackLevel algorithm guesses the pedestal from the
+# 2nd percentile of the luminance histogram, so the value moves with the scene.
+# Awb::calculateRgbMeans() subtracts that guess before computing grey-world
+# gains, and on this sensor the pedestal (64/1023, about 6.3% of full scale) is
+# roughly twice the red signal in ordinary indoor light. A wrong pedestal
+# therefore lands almost entirely on the red gain.
+#
+# Measured on a Dell Latitude 7320 Detachable, raw Bayer read straight off the
+# sensor with a dark frame subtracted, camera on lit white paper:
+#
+#   black level                    64.4 / 1023  (10-bit), consistent across
+#                                  all four CFA positions to within 0.6
+#   native balance                 R/G 0.164   B/G 0.665
+#   output with the guessed level  R/G 0.391   B/G 0.938   (neutral is 1.000)
+#
+# blackLevel is read as a 16-bit value and reduced with >> 8, so 64.4 in
+# 10-bit scales by 64 to 4122, giving the 8-bit level of 16 the soft ISP wants.
+# Anything in 4096..4351 yields the same 16.
+#
+# No Ccm is defined. A colour correction matrix improves hue accuracy but
+# cannot fix a white balance error, and none has been measured for this part.
+
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4122
+  - Awb:
+  - Adjust:
+  - Agc:
+  - Ccm:
+      ccms:
+        - ct: 3100
+          ccm: [ 1.8101, -0.3453, -0.4648, 0.3076, 0.4034, 0.2890, -0.1110, -0.6389, 1.7499 ]
+...

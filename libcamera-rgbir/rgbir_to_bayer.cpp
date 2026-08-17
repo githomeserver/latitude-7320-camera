@@ -7,6 +7,7 @@
 
 #include "rgbir_to_bayer.h"
 
+#include <algorithm>
 #include <errno.h>
 #include <string.h>
 
@@ -85,6 +86,22 @@ void RgbIrToBayer::cellValues(const uint8_t *lines[4], unsigned int cx,
 	int32_t r = counts_[Red] ? sum[Red] / counts_[Red] : 0;
 	int32_t b = counts_[Blue] ? sum[Blue] / counts_[Blue] : 0;
 
+	/*
+	 * Optional infrared subtraction. Every colour photosite responds to
+	 * near-infrared as well, so each colour channel carries an IR pedestal
+	 * that washes the image out. Removing k times the cell's IR average
+	 * restores saturation, at the cost of adding IR's noise to all three.
+	 * Values are still black-level-relative here, which is what makes a
+	 * plain subtraction correct.
+	 */
+	if (irSubtract_ > 0.0f && counts_[Infrared]) {
+		const int32_t ir = sum[Infrared] / counts_[Infrared];
+		const int32_t d = static_cast<int32_t>(irSubtract_ * ir);
+		g -= d;
+		r -= d;
+		b -= d;
+	}
+
 	if (shading) {
 		const ShadingMap &s = *shading;
 		const uint32_t one = s.one ? s.one : 1;
@@ -111,6 +128,148 @@ void RgbIrToBayer::cellValues(const uint8_t *lines[4], unsigned int cx,
 	G = clamp(g + blackLevel_);
 	R = clamp(r + blackLevel_);
 	B = clamp(b + blackLevel_);
+}
+
+void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
+				   unsigned int cols, unsigned int cy,
+				   unsigned int rows, const ShadingMap *shading,
+				   uint16_t G[4], uint16_t &R, uint16_t &B) const
+{
+	int32_t cell[16];
+	for (unsigned int dy = 0; dy < 4; dy++) {
+		const uint8_t *p = lines[dy] + (cx * 4) * 2;
+		for (unsigned int dx = 0; dx < 4; dx++) {
+			int32_t v = p[0] | (p[1] << 8);
+			cell[dy * 4 + dx] = v - blackLevel_;
+			p += 2;
+		}
+	}
+
+	int32_t sum[4] = { 0, 0, 0, 0 };
+	for (uint8_t c = 0; c < 4; c++)
+		for (uint8_t k = 0; k < counts_[c]; k++)
+			sum[c] += cell[positions_[c][k]];
+
+	int32_t r = counts_[Red] ? sum[Red] / counts_[Red] : 0;
+	int32_t b = counts_[Blue] ? sum[Blue] / counts_[Blue] : 0;
+
+	/*
+	 * Green per 2x2 quadrant. Derived from positions_ rather than assumed,
+	 * so a differently-phased 4x4 pattern still works. A quadrant with no
+	 * green falls back to the cell mean instead of emitting a hole.
+	 */
+	const int32_t gCell = counts_[Green] ? sum[Green] / counts_[Green] : 0;
+	int32_t g[4];
+	for (unsigned int q = 0; q < 4; q++) {
+		const unsigned int qy = q >> 1, qx = q & 1;
+		int32_t acc = 0;
+		unsigned int n = 0;
+		for (uint8_t k = 0; k < counts_[Green]; k++) {
+			const uint8_t pos = positions_[Green][k];
+			if ((pos >> 2) / 2 == qy && (pos & 3) / 2 == qx) {
+				acc += cell[pos];
+				n++;
+			}
+		}
+		const int32_t gq = n ? acc / static_cast<int32_t>(n) : gCell;
+		/*
+		 * Blend toward the cell mean. The quadrant mean carries the
+		 * detail and the cell mean carries the lower noise, so this
+		 * slides between them rather than forcing a choice.
+		 */
+		g[q] = gCell + (int32_t)(sharpness_ * (float)(gq - gCell));
+	}
+
+	if (irSubtract_ > 0.0f && counts_[Infrared]) {
+		const int32_t ir = sum[Infrared] / counts_[Infrared];
+		const int32_t d = static_cast<int32_t>(irSubtract_ * ir);
+		for (unsigned int q = 0; q < 4; q++)
+			g[q] -= d;
+		r -= d;
+		b -= d;
+	}
+
+	if (shading) {
+		const ShadingMap &s = *shading;
+		const uint32_t one = s.one ? s.one : 1;
+		if (s.gains[Green]) {
+			const uint32_t gain = sampleGain(s.gains[Green], s.width, s.height, cx, cols, cy, rows);
+			for (unsigned int q = 0; q < 4; q++)
+				g[q] = (int32_t)((int64_t)g[q] * gain / one);
+		}
+		if (s.gains[Red])
+			r = (int32_t)((int64_t)r * sampleGain(s.gains[Red], s.width, s.height, cx, cols, cy, rows) / one);
+		if (s.gains[Blue])
+			b = (int32_t)((int64_t)b * sampleGain(s.gains[Blue], s.width, s.height, cx, cols, cy, rows) / one);
+	}
+
+	const int32_t maxVal = maxValue_;
+	auto clamp = [maxVal](int32_t v) -> uint16_t {
+		if (v < 0)
+			return 0;
+		return v > maxVal ? (uint16_t)maxVal : (uint16_t)v;
+	};
+
+	for (unsigned int q = 0; q < 4; q++)
+		G[q] = clamp(g[q] + blackLevel_);
+	R = clamp(r + blackLevel_);
+	B = clamp(b + blackLevel_);
+}
+
+int RgbIrToBayer::convertSharp(const uint8_t *src, unsigned int srcWidth,
+			       unsigned int srcHeight, unsigned int srcStride,
+			       uint16_t *dst, unsigned int dstStride,
+			       Order order, const ShadingMap *shading) const
+{
+	if (srcWidth % 4 || srcHeight % 4)
+		return -EINVAL;
+
+	const unsigned int cols = srcWidth / 4;
+	const unsigned int rows = srcHeight / 4;
+	const unsigned int dstPitch = dstStride / 2;
+
+	/*
+	 * Each cell row produces output rows 2*cy and 2*cy+1, so converting
+	 * output rows [activeY0_, activeY1_) means cell rows [y0/2, (y1-1)/2].
+	 * Shading and the IR average are per-cell and do not depend on
+	 * neighbouring cells, so skipping rows changes nothing in the rows that
+	 * are kept.
+	 */
+	unsigned int cy0 = 0, cy1 = rows;
+	if (activeY1_ > activeY0_) {
+		cy0 = activeY0_ / 2;
+		cy1 = std::min(rows, (activeY1_ + 1) / 2 + 1);
+	}
+
+	for (unsigned int cy = cy0; cy < cy1; cy++) {
+		const uint8_t *lines[4];
+		for (unsigned int i = 0; i < 4; i++)
+			lines[i] = src + (cy * 4 + i) * srcStride;
+
+		uint16_t *out0 = dst + (cy * 2) * dstPitch;
+		uint16_t *out1 = out0 + dstPitch;
+
+		for (unsigned int cx = 0; cx < cols; cx++) {
+			uint16_t G[4], R, B;
+			cellValuesSharp(lines, cx, cols, cy, rows, shading, G, R, B);
+
+			const uint16_t t1 = order == Order::GRBG ? R : B;
+			const uint16_t b0 = order == Order::GRBG ? B : R;
+			/*
+			 * The quad's green slots sit at its top-left and
+			 * bottom-right, which is exactly where the cell's
+			 * top-left and bottom-right quadrants are. The other
+			 * two quadrant greens have no slot in a 2x2 Bayer quad
+			 * and are necessarily dropped.
+			 */
+			out0[cx * 2 + 0] = G[0];
+			out0[cx * 2 + 1] = t1;
+			out1[cx * 2 + 0] = b0;
+			out1[cx * 2 + 1] = G[3];
+		}
+	}
+
+	return 0;
 }
 
 int RgbIrToBayer::convertSameSize(const uint8_t *src, unsigned int srcWidth,
@@ -156,7 +315,7 @@ int RgbIrToBayer::convertSameSize(const uint8_t *src, unsigned int srcWidth,
 int RgbIrToBayer::convert(const uint8_t *src, unsigned int srcWidth,
 			  unsigned int srcHeight, unsigned int srcStride,
 			  uint16_t *dst, unsigned int dstStride,
-			  const ShadingMap *shading) const
+			  Order order, const ShadingMap *shading) const
 {
 	if (srcWidth % 4 || srcHeight % 4)
 		return -EINVAL;
@@ -177,10 +336,18 @@ int RgbIrToBayer::convert(const uint8_t *src, unsigned int srcWidth,
 			uint16_t G, R, B;
 			cellValues(lines, cx, cols, cy, rows, shading, G, R, B);
 
-			/* GRBG: G R / B G */
+			/*
+			 * Emit in the caller's order. This used to be fixed at
+			 * GRBG, which silently transposes red and blue on a
+			 * pipeline that declares GBRG - as this sensor's driver
+			 * does, to compensate for the module being mounted 180
+			 * degrees.
+			 */
+			const uint16_t t1 = order == Order::GRBG ? R : B;
+			const uint16_t b0 = order == Order::GRBG ? B : R;
 			out0[cx * 2 + 0] = G;
-			out0[cx * 2 + 1] = R;
-			out1[cx * 2 + 0] = B;
+			out0[cx * 2 + 1] = t1;
+			out1[cx * 2 + 0] = b0;
 			out1[cx * 2 + 1] = G;
 		}
 	}

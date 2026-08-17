@@ -30,7 +30,17 @@ SRC="${USER_HOME:-$HOME}/.cache/libcamera-build/libcamera-src"
 ISP="$SRC/src/libcamera/software_isp"
 DROPIN_DIR=/etc/systemd/system/v4l2-relayd@.service.d
 RGBIR_CONF="$DROPIN_DIR/50-rgbir.conf"
-RELAY_CONF=/etc/v4l2-relayd.d/default.conf
+# Same detection as fix-browser-camera.sh and tune-relay-pipeline.sh: the
+# per-instance file exists only on the Dell OEM image, while a stock Ubuntu
+# install keeps the config in /etc/default. Hardcoding the first made `enable`
+# abort part-way - after installing libcamera but before setting VIDEOSRC and
+# the environment - so the pre-pass silently never ran and the diagnostic
+# logged nothing, which looks exactly like the pre-pass being broken.
+RELAY_CONF=""
+for c in /etc/v4l2-relayd.d/default.conf /etc/default/v4l2-relayd; do
+    [ -f "$c" ] && RELAY_CONF="$c"
+done
+[ -n "$RELAY_CONF" ] || { echo "ERROR: no v4l2-relayd config found" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: must run as root (sudo $0)" >&2; exit 1; }
 

@@ -13,12 +13,18 @@
 
 set -u
 
-USER_HOME="$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)"
-BUILD="${OV5678_BUILD_DIR:-${USER_HOME:-$HOME}/.cache}/ov5678-sensor-build"
-KO="$BUILD/ov5678.ko"
+# The standalone out-of-tree ov5678.ko this script was written against no
+# longer exists. The sensor is driven by ov5675 with the OVTI5678 ACPI id
+# added (upstream patch 2/3), shipped by DKMS package camera-dell7320.
+MOD=ov5675
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: must run as root (sudo $0)" >&2; exit 1; }
-[ -f "$KO" ] || { echo "ERROR: $KO not built. Run tools/build.sh sensor" >&2; exit 1; }
+modinfo -n "$MOD" >/dev/null 2>&1 || { echo "ERROR: $MOD not installed. Run tools/dkms-install.sh" >&2; exit 1; }
+if ! (zstdcat "$(modinfo -n $MOD)" 2>/dev/null || cat "$(modinfo -n $MOD)") | strings | grep -q OVTI5678; then
+    echo "ERROR: the installed $MOD is the STOCK one - it has no OVTI5678 id and will never bind." >&2
+    echo "       Install the DKMS package: sudo dkms install camera-dell7320/0.4 -k \$(uname -r)" >&2
+    exit 1
+fi
 
 MARK="$(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -29,24 +35,30 @@ printf '  tps68470-gpio bound:       %s\n' \
     "$([ -e /sys/bus/platform/devices/tps68470-gpio/driver ] && echo yes || echo NO)"
 printf '  tps68470-regulator bound:  %s\n' \
     "$([ -e /sys/bus/platform/devices/tps68470-regulator/driver ] && echo yes || echo NO)"
-printf '  int3472 gpio pin params:   front_reset=%s front_powerdown=%s rail_map=%s\n' \
-    "$(cat /sys/module/intel_skl_int3472_tps68470/parameters/front_reset 2>/dev/null)" \
-    "$(cat /sys/module/intel_skl_int3472_tps68470/parameters/front_powerdown 2>/dev/null)" \
-    "$(cat /sys/module/intel_skl_int3472_tps68470/parameters/rail_map 2>/dev/null)"
+# The upstream module has no parameters - reset pin and rails are compiled in.
+# Only the old development module exposed these, so report which one is loaded.
+if [ -e /sys/module/intel_skl_int3472_tps68470/parameters/front_reset ]; then
+    printf '  int3472: DEVELOPMENT module, front_reset=%s front_powerdown=%s rail_map=%s\n' \
+        "$(cat /sys/module/intel_skl_int3472_tps68470/parameters/front_reset 2>/dev/null)" \
+        "$(cat /sys/module/intel_skl_int3472_tps68470/parameters/front_powerdown 2>/dev/null)" \
+        "$(cat /sys/module/intel_skl_int3472_tps68470/parameters/rail_map 2>/dev/null)"
+else
+    printf '  int3472: upstream board data (no parameters); reset hardcoded to tps68470-gpio 5\n'
+fi
 
 echo
-echo "== loading ov5678 =="
-rmmod ov5678 2>/dev/null
-if ! insmod "$KO" "$@"; then
-    echo "ERROR: insmod failed" >&2
+echo "== loading $MOD =="
+modprobe -r "$MOD" 2>/dev/null
+if ! modprobe "$MOD" "$@"; then
+    echo "ERROR: modprobe $MOD failed" >&2
     exit 1
 fi
-echo "  inserted with: ${*:-<defaults>}"
+echo "  loaded $(modinfo -n $MOD) with: ${*:-<defaults>}"
 sleep 2
 
 echo
 echo "== kernel log =="
-journalctl -k --no-pager --since "$MARK" | grep -i 'ov5678' | sed 's/^/  /' || echo "  (nothing)"
+journalctl -k --no-pager --since "$MARK" | grep -iE 'ov5675|ov5678|OVTI5678' | sed 's/^/  /' || echo "  (nothing)"
 
 echo
 echo "== result =="
@@ -71,7 +83,9 @@ else
     done
     echo "   2. wrong reset/powerdown pins. Sweep the tps68470 gpiochip directly"
     echo "      with gpioset (no reboot needed) - see README."
-    echo "   3. wrong rail map: set rail_map=1 in the int3472 module and reboot."
+    echo "   3. wrong rails. The upstream board data hardcodes VSIO/AUX1/AUX2;"
+    echo "      note INT3472 probes ONCE per boot, so any board-data change"
+    echo "      needs a reboot - unbind/bind cannot re-probe it."
 fi
 
 echo

@@ -1,0 +1,79 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/*
+ * Copyright (C) 2026, Sahan Nissanka
+ *
+ * Motion-adaptive temporal denoise for the software ISP.
+ */
+
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <vector>
+
+namespace libcamera {
+
+/**
+ * \brief Recursive temporal denoise with a soft motion gate
+ *
+ * This sensor is noise limited, not resolution limited: trading green
+ * resolution against noise in the mosaic conversion leaves detail-to-noise
+ * flat, which says the photons - not the algorithm - are the constraint. The
+ * only way to get more information out is to use more photons, and the cheapest
+ * source of those is the previous frame.
+ *
+ * Each sample is mixed toward its own history:
+ *
+ *     out = prev + w * (cur - prev)
+ *
+ * with w falling to \a alpha where the sample is unchanged and rising to 1
+ * where it has moved:
+ *
+ *     w = alpha + (1 - alpha) * min(1, |cur - prev| / threshold)
+ *
+ * A hard threshold would be cheaper but it switches per sample, and because the
+ * switching is driven by noise it sparkles in exactly the flat areas this is
+ * meant to clean up. The ramp costs one multiply and does not.
+ *
+ * In still areas the recursion converges to a noise reduction of
+ * sqrt(alpha / (2 - alpha)): 0.25 gives 2.6x, 0.5 gives 1.7x. Moving areas fall
+ * back to the current frame and are neither cleaned nor smeared, which is the
+ * right trade for video calls, where most of the frame is wall.
+ *
+ * \a threshold must sit above the noise floor or noise reads as motion and
+ * nothing is ever averaged. Measured floor here is 6.6 to 9.4 counts at 10 bits
+ * depending on the sharpness setting, so the default is well clear of it.
+ */
+class TemporalDenoise
+{
+public:
+	/**
+	 * \param[in] alpha Weight of the current frame where nothing moved,
+	 *	0 < alpha <= 1. Lower denoises harder. 1 disables.
+	 * \param[in] threshold Difference, in raw counts, at which a sample is
+	 *	taken as moving and passed through untouched.
+	 */
+	void configure(float alpha, uint16_t threshold);
+
+	/** \brief Denoise \a frame of \a count samples in place */
+	void apply(uint16_t *frame, size_t count);
+
+	/** \brief Forget the history, e.g. after a mode change */
+	void reset() { history_.clear(); }
+
+	/** \brief Fraction of blocks treated as moving by the last apply() */
+	float lastMotionFraction() const { return motionFraction_; }
+
+private:
+	static constexpr unsigned int kBlock = 256;
+
+	std::vector<uint16_t> history_;
+	std::vector<uint16_t> blockMotion_;
+	std::vector<uint16_t> scratch_;
+	float alpha_ = 1.0f;
+	uint16_t threshold_ = 32;
+	float motionFraction_ = 0.0f;
+};
+
+} /* namespace libcamera */

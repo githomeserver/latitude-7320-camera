@@ -16,7 +16,9 @@ Usage:  solve-ccm.py capture   grab a frame and sample it
 
 import glob
 import os
+import re
 import subprocess
+import time
 import sys
 import tempfile
 
@@ -47,15 +49,140 @@ def linear_to_srgb(v):
 FRAME = os.path.join(OUTDIR, "ccm-capture.png")
 
 
+def reported_ct():
+    """The colour temperature THIS pipeline reports for the current light.
+
+    The CCM entry's "ct" is not a physical measurement - it is the key libcamera
+    interpolates on, and the value it compares against comes from this AWB's own
+    estimateCCT() over its grey-world gains. So the label has to be whatever the
+    estimator says under the light the matrix was fitted for, or interpolation
+    picks the wrong matrix.
+
+    This bit us once already: the installed entry says ct 3100 because that is
+    what the sensor reported indoors in August, before the AWB gain clamp was
+    removed and IR subtraction and lens shading were added. The same room now
+    reads 4483. With one matrix that is harmless, since it is applied whatever
+    the temperature; with two it would silently blend the wrong pair.
+    """
+    env = dict(os.environ)
+    env.update({
+        "LD_LIBRARY_PATH": "/usr/local/lib/x86_64-linux-gnu",
+        "LIBCAMERA_IPA_MODULE_PATH": "/usr/local/lib/x86_64-linux-gnu/libcamera/ipa",
+        "LIBCAMERA_RGBIR": "1",
+        "LIBCAMERA_SOFTISP_MODE": "cpu",
+        "LIBCAMERA_LOG_LEVELS": "IPASoftAwb:DEBUG",
+    })
+    # cam needs exclusive access to the libcamera camera, which the always-on
+    # service holds. Without this the probe silently fails and the entry gets
+    # labelled with the fallback, which is the very bug this function exists to
+    # prevent.
+    svc = "ov5678-camera.service"
+    was_up = subprocess.run(["systemctl", "is-active", "--quiet", svc]).returncode == 0
+    if was_up:
+        subprocess.run(["sudo", "-n", "systemctl", "stop", svc],
+                       capture_output=True)
+        time.sleep(1)
+    try:
+        r = subprocess.run(
+            ["/usr/local/bin/cam", "-c1", "-s", "width=1280,height=720", "-C60"],
+            capture_output=True, text=True, timeout=120, env=env)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    finally:
+        if was_up:
+            subprocess.run(["sudo", "-n", "systemctl", "start", svc],
+                           capture_output=True)
+            time.sleep(3)
+    vals = re.findall(r"temperature: (\d+)", r.stdout + r.stderr)
+    if len(vals) < 10:
+        return None
+    tail = [int(v) for v in vals[-20:]]          # after AWB has settled
+    tail.sort()
+    return tail[len(tail) // 2]
+
+
+def reap_stale_consumers():
+    """Kill leftover gst readers of the loopback before capturing.
+
+    A timed-out capture can leave its gst-launch alive holding /dev/video0. The
+    next attempt then dies with "not-negotiated (-4)" and times out as well,
+    which looks like the camera being mysteriously busy - and every retry adds
+    another orphan. Seen exactly that twice.
+
+    Matching is on the process NAME plus a read of its cmdline, never
+    `pgrep -f v4l2src`: a -f pattern also matches the shell command that
+    contains it, so the sweep kills its own caller. That happened too.
+    """
+    prod = subprocess.run(["systemctl", "show", "-p", "MainPID", "--value",
+                           "ov5678-camera.service"],
+                          capture_output=True, text=True).stdout.strip()
+    try:
+        pids = subprocess.run(["pgrep", "-x", "gst-launch-1.0"],
+                              capture_output=True, text=True).stdout.split()
+    except FileNotFoundError:
+        return
+    killed = 0
+    for pid in pids:
+        if pid == prod:
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "v4l2src" in cmd and "/dev/video0" in cmd:
+            subprocess.run(["kill", "-9", pid], capture_output=True)
+            killed += 1
+    if killed:
+        print(f"  cleared {killed} stale reader(s) of /dev/video0")
+        time.sleep(1)
+
+
+def exposure_headroom():
+    """Report whether the sensor has room to expose, from its own controls.
+
+    Two failure modes look similar in the patch numbers and have opposite fixes.
+    Too bright and the top patches clip, so the fit loses its white anchor. Too
+    dim and the sensor pegs exposure AND analogue gain at maximum, so everything
+    lands in the bottom third of the range at maximum noise, and the AWB starts
+    drifting too. Both were hit here within ten minutes, in that order.
+
+    Reading the subdev says which, instead of guessing from the picture.
+    """
+    for sd in sorted(glob.glob("/dev/v4l-subdev*")):
+        try:
+            out = subprocess.run(["v4l2-ctl", "-d", sd, "--list-ctrls"],
+                                 capture_output=True, text=True, timeout=10).stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+        if "exposure" not in out or "analogue_gain" not in out:
+            continue
+        got = {}
+        for line in out.splitlines():
+            m = re.search(r"(exposure|analogue_gain)\s+0x\w+\s+\(int\)\s+:\s+"
+                          r"min=(\d+) max=(\d+).*value=(\d+)", line)
+            if m:
+                got[m.group(1)] = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        if len(got) == 2:
+            return got
+    return None
+
+
 def capture():
     """Grab a frame and keep it, so fit() scores the frame you verified."""
+    reap_stale_consumers()
     tmp = tempfile.mkdtemp()
     try:
+        # No videorate. It was there to space six frames two seconds apart so
+        # the AGC could settle, but it stalls intermittently against a loopback
+        # holding only two buffers - hanging the whole capture for no reason
+        # anyone could see. The spacing is not needed anyway: the producer runs
+        # continuously, so exposure and white balance are already converged
+        # before this reader ever attaches. Just take a run of frames and keep
+        # the last.
         subprocess.run(
             ["gst-launch-1.0", "-q", "v4l2src", "device=/dev/video0",
-             "!", "videoconvert", "!", "videorate",
-             "!", "video/x-raw,framerate=2/1",
-             "!", "identity", "eos-after=6", "!", "pngenc",
+             "num-buffers=60", "!", "videoconvert", "!", "pngenc",
              "!", "multifilesink", f"location={tmp}/f-%02d.png"],
             capture_output=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -63,6 +190,17 @@ def capture():
                  "  Another process may still hold the camera - check with:\n"
                  "    pgrep -a gst-launch\n"
                  "  The CPU debayer is also slower; wait a few seconds and retry.")
+    hr = exposure_headroom()
+    if hr:
+        e_min, e_max, e = hr["exposure"]
+        g_min, g_max, g = hr["analogue_gain"]
+        print(f"  sensor: exposure {e}/{e_max}, analogue gain {g}/{g_max}")
+        if e >= e_max and g >= g_max:
+            print("  WARNING: exposure AND gain are both at maximum - the scene is")
+            print("  too dim to fit from. Raise the target's brightness a couple of")
+            print("  steps; everything will otherwise sit in the bottom third of the")
+            print("  range at maximum noise.")
+
     fs = sorted(glob.glob(tmp + "/f-*.png"))
     if not fs:
         sys.exit("no frames captured - is /dev/video0 free?")
@@ -149,7 +287,13 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     os.makedirs(OUTDIR, exist_ok=True)
 
-    img = load_or_capture(reuse=(mode == "fit"))
+    # fit captures FRESH unless --reuse is given. Reusing by default has now
+    # silently scored a stale frame twice in this project: once a capture from a
+    # different machine, and once one shot at a different screen brightness,
+    # both producing a confidently wrong matrix. Whatever is on screen now is
+    # what gets fitted.
+    reuse = "--reuse" in sys.argv
+    img = load_or_capture(reuse=reuse)
     sampled = sample(img)
     cam = [c for c, _pk in sampled]
     peaks = [pk for _c, pk in sampled]
@@ -239,6 +383,28 @@ def main():
             print("  -> check alignment in data/ccm-sampling.png")
         raise SystemExit(1)
 
+    # Neutralise any residual white balance error BEFORE fitting.
+    #
+    # The comment above is right that a CCM cannot fix a white balance error and
+    # should not be asked to - but nothing acted on it, so a cast in the capture
+    # went straight into the solve. The row-sum-to-1 constraint only keeps
+    # neutrals neutral if the neutral input is already equal-RGB; with a cast it
+    # does not, and the solver spends its freedom on white balance instead of
+    # hue and saturation. A dimmed target here read R/G 0.813, and the matrix
+    # came out with off-diagonals of -2 and +3.
+    #
+    # Scaling R and B so the white patch is neutral is what the runtime AWB does
+    # anyway, so the matrix that comes out is the pure colour part.
+    wb = [wh[1] / wh[0] if wh[0] > 1e-6 else 1.0,
+          1.0,
+          wh[1] / wh[2] if wh[2] > 1e-6 else 1.0]
+    if max(abs(wb[0] - 1.0), abs(wb[2] - 1.0)) > 0.02:
+        print(f"\n  neutralising a white balance error before fitting: "
+              f"R x{wb[0]:.3f}  B x{wb[2]:.3f}")
+        cam = [[c[0] * wb[0], c[1], c[2] * wb[2]] for c in cam]
+        wh2 = cam[18]
+        print(f"  white patch after: R/G {wh2[0]/wh2[1]:.3f}  B/G {wh2[2]/wh2[1]:.3f}")
+
     cam_fit = [cam[i] for i in usable]
     ref_fit = [ref[i] for i in usable]
     print(f"\n  fitting on {len(usable)} of {len(cam)} patches")
@@ -260,10 +426,19 @@ def main():
           "  WARNING: not diagonally dominant - treat this result with suspicion")
 
     flat = ", ".join(f"{v:.4f}" for row in m for v in row)
+    ct = reported_ct()
+    if ct is None:
+        ct = 6750
+        print("\n  WARNING: could not read the reported colour temperature;")
+        print("  falling back to 6750. Set the ct by hand - a wrong label makes")
+        print("  interpolation choose the wrong matrix once a second one exists.")
+    else:
+        print(f"\n  this pipeline reports {ct} K under the light you just shot in")
+
     print("\nadd to libcamera/ov5675.yaml, before the Awb entry:\n")
     print("  - Ccm:")
     print("      ccms:")
-    print("        - ct: 6750")
+    print(f"        - ct: {ct}")
     print(f"          ccm: [ {flat} ]")
 
 

@@ -115,6 +115,7 @@ public:
 	int convert(const uint8_t *src, unsigned int srcWidth,
 		    unsigned int srcHeight, unsigned int srcStride,
 		    uint16_t *dst, unsigned int dstStride,
+		    Order order = Order::GRBG,
 		    const ShadingMap *shading = nullptr) const;
 
 	/**
@@ -135,6 +136,31 @@ public:
 			    uint16_t *dst, unsigned int dstStride, Order order,
 			    const ShadingMap *shading = nullptr) const;
 
+	/**
+	 * \brief Convert to half size, keeping green's spatial detail
+	 *
+	 * Same geometry and cost as convert(), but sharper. convert() averages
+	 * all eight green samples in the 4x4 cell into ONE value and writes it
+	 * to both green slots of the output quad, so luma is flat across the
+	 * cell - the output is effectively 4x4 binned when the geometry only
+	 * calls for 2x.
+	 *
+	 * The mosaic makes better available for free. Split the cell into four
+	 * 2x2 quadrants and each holds exactly two greens, so the quad's two
+	 * green slots can carry the top-left and bottom-right quadrant means
+	 * instead of one number twice. Green sits at the same density as it
+	 * does in Bayer, so this is real detail, not interpolation.
+	 *
+	 * Chroma stays per-cell: red and blue are only 2 of 16 positions each,
+	 * and a 2x2 output quad has just one slot for each, so there is nothing
+	 * to gain there. Luma is what the eye reads for sharpness anyway.
+	 */
+	int convertSharp(const uint8_t *src, unsigned int srcWidth,
+			 unsigned int srcHeight, unsigned int srcStride,
+			 uint16_t *dst, unsigned int dstStride,
+			 Order order = Order::GRBG,
+			 const ShadingMap *shading = nullptr) const;
+
 private:
 	/* Shared per-cell work: gather, average, shade, re-add the pedestal. */
 	void cellValues(const uint8_t *lines[4], unsigned int cx,
@@ -142,11 +168,78 @@ private:
 			const ShadingMap *shading,
 			uint16_t &G, uint16_t &R, uint16_t &B) const;
 
+	/*
+	 * As cellValues(), but green is returned per 2x2 quadrant of the cell,
+	 * in raster order (top-left, top-right, bottom-left, bottom-right).
+	 */
+	void cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
+			     unsigned int cols, unsigned int cy,
+			     unsigned int rows, const ShadingMap *shading,
+			     uint16_t G[4], uint16_t &R, uint16_t &B) const;
+
 	/* Positions within the cell holding each channel, and how many. */
 	uint8_t positions_[4][8];
 	uint8_t counts_[4];
+	float sharpness_ = 1.0f;
+	unsigned int activeY0_ = 0;
+	unsigned int activeY1_ = 0;
 	uint16_t blackLevel_;
 	uint16_t maxValue_;
+	float irSubtract_ = 0.0f;
+
+public:
+	/**
+	 * \brief Set how much of the infrared plane to subtract from R, G and B
+	 * \param[in] k Coefficient, 0 disables
+	 *
+	 * Every colour photosite on this sensor also responds to near-infrared,
+	 * so the colour channels carry an IR pedestal that desaturates them.
+	 * Subtracting k times the cell's IR average removes it.
+	 *
+	 * The trade is noise. IR is by far the weakest channel here - of order
+	 * 9 counts against green's 98 - so subtracting it adds its noise to all
+	 * three colour channels, and the penalty scales with k. Judged by eye
+	 * on this hardware, k=1.0 is visibly cleaner than k=2.0 while k=2.0 is
+	 * the more colour-accurate; saturation applied afterwards buys chroma
+	 * without that noise cost, so prefer a low k with more saturation.
+	 */
+	void setIrSubtract(float k) { irSubtract_ = k; }
+
+	/**
+	 * \brief How much intra-cell green detail convertSharp() restores
+	 *
+	 * 0 makes convertSharp() identical to convert(): every output green is
+	 * the mean of all eight in the cell, which is the quietest option.
+	 * 1 uses the 2x2 quadrant mean, which is the sharpest.
+	 *
+	 * This is a resolution-for-noise trade and NOT a free win. Measured on
+	 * a real frame: 1 gives 1.49x the vertical detail but 1.43x the noise,
+	 * leaving detail-to-noise essentially unchanged at 1.04x. Averaging two
+	 * samples instead of eight can only divide read noise by sqrt(2) rather
+	 * than sqrt(8). On a low-detail scene the extra grain is what you see;
+	 * on a detailed one, the detail is. Hence a knob rather than a default.
+	 */
+	/**
+	 * \brief Restrict conversion to a band of output rows
+	 * \param[in] y0 First output row to produce
+	 * \param[in] y1 One past the last output row to produce
+	 *
+	 * The consumer of this conversion crops. On this machine the pre-pass
+	 * emits 1296x972 and the debayer then reads a 1280x720 window at
+	 * (8,126), so 252 of the 972 rows - 26% - are computed and thrown away.
+	 * Converting only the band that is actually read removes that work from
+	 * every frame, and the pipeline is CPU bound on one core.
+	 *
+	 * Rows outside the band are left untouched, so the caller must not read
+	 * them. Pass y1 <= y0 to disable and convert everything.
+	 */
+	void setActiveRows(unsigned int y0, unsigned int y1)
+	{
+		activeY0_ = y0;
+		activeY1_ = y1;
+	}
+
+	void setSharpness(float k) { sharpness_ = k < 0.0f ? 0.0f : (k > 1.0f ? 1.0f : k); }
 };
 
 } /* namespace libcamera */

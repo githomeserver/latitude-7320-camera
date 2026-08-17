@@ -78,7 +78,10 @@ else
     gpioinfo -c "$CHIP" | grep -E 'used|consumer=' | sed 's/^/    /'
     echo
 
-    want="$(cat /sys/module/intel_skl_int3472_tps68470/parameters/front_reset 2>/dev/null || echo '?')"
+    # The upstream module has no front_reset parameter - the pin is compiled in
+    # as 5. Fall back to that rather than reporting '?' and failing the check.
+    want="$(cat /sys/module/intel_skl_int3472_tps68470/parameters/front_reset 2>/dev/null || echo 5)"
+    [ -n "$want" ] || want=5
     if [ "$want" = "-1" ]; then
         fail "front_reset=-1 yet lines are claimed — something else holds them"
     elif gpioinfo -c "$CHIP" | grep -E "^\s*line\s+$want:" | grep -qE 'used|consumer='; then

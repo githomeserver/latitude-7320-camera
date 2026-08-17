@@ -1,0 +1,6 @@
+options intel_skl_int3472_tps68470 front_reset=5 front_powerdown=-1 rail_map=1 rear_reset=-1 rear_powerdown=-1
+
+# OBSOLETE as of 2026-08-16. The DKMS package now carries the upstream
+# board data, which hardcodes reset=gpio5 and the VSIO/AUX1/AUX2 rails and
+# accepts NO module parameters. Loading with this file present would fail
+# with "unknown parameter". Kept only as a record of the development module.

@@ -54,27 +54,34 @@ with colour ones and destroys the very structure being looked for.
 
 ## Status
 
-Working: 1280x720 at ~30 fps in Firefox, Chromium, and anything else that opens
-`/dev/video0`. Greys are neutral. Colour accuracy is limited by the sensor
-being RGB-IR while the pipeline reads it as Bayer - see
-[defect 5](#5-the-sensor-is-rgb-ir-not-bayer-at-all-kernel--root-cause).
+Working: 1280x720 at ~28 fps in Firefox, Chromium, and anything else that opens
+`/dev/video0`. The 4x4 RGB-IR mosaic is now handled properly by a pre-pass
+rather than being misread as Bayer, lens shading is corrected from a map measured
+on this unit, and a temporal denoise runs on the mosaic.
 
-| | before | after |
+| | before | now |
 |---|---|---|
-| works at all | no driver claimed the ACPI id | 1280x720, 30.7 fps |
-| white balance (linear R/G) | 0.372 | 1.009 |
-| colour cast | 34% saturation on white paper | ~6% |
-| colour temperature | 6752 K indoors (nonsense) | 3139 K (correct) |
+| works at all | no driver claimed the ACPI id | 1280x720 at ~28 fps |
+| mosaic | 4x4 RGB-IR read as 2x2 Bayer | converted to Bayer up front |
+| white balance (linear R/G) | 0.372 | ~1.00 |
 | red and blue | transposed | correct |
-| black floor on a lit scene | `(70, 50, 144)` violet | `(28, 31, 5)` |
-| debayer | CPU, ~13 ms/frame with a CCM | GPU, no stutter |
-| full resolution | assumed too slow | 2584x1944 at 29.95 fps |
+| corner brightness (linear, vs centre) | 0.28 | **1.00** |
+| temporal noise, still scene | baseline | **2.0x cleaner** |
+| CPU while streaming | 104% of one core | **78%** |
+| CPU with nothing watching | 104% of one core | **5.5%** |
+| CPU temperature, idle | 99 C | **43 C** |
 
-Those are single measurements on lit white paper; they move with the scene. See
-[What step 6 should print](#what-step-6-should-print) for the ranges to expect.
+Measured on this machine; scene-dependent figures move with the scene.
 
-Saturation is still low - see [Known limitations](#known-limitations). The rear
-OV8856 is **not** addressed here.
+**What is still not good: saturation.** The sensor separates colour far less than
+sRGB expects - measured on a colour chart, the dominant/next-channel ratio falls
+short by **6.8x on red and 4.4x on blue**. A matrix that fully corrects that
+needs off-diagonals of +-3 and amplifies noise 5.3x, against 1.9x for the matrix
+that ships. On a sensor that is already noise limited that is the wrong trade, so
+the shipped matrix is deliberately a compromise. See
+[Known limitations](#known-limitations).
+
+The rear OV8856 is **not** addressed here.
 
 ## What was actually broken
 
@@ -131,28 +138,37 @@ Adding the ACPI ID to `ov5675.c` and an `IPU_SENSOR_CONFIG("OVTI5678", 1,
 
 ### 4. Browsers could not reach it (system configuration)
 
-The kernel side working is not enough. Applications open a plain V4L2 device,
-and the IPU6's 64 `/dev/videoN` nodes are raw Bayer sinks that cannot serve
-one. The usable device is `/dev/video0`, a v4l2loopback fed by `v4l2-relayd`.
+The kernel side working is not enough. Applications open a plain V4L2 device, and
+the IPU6's 64 `/dev/videoN` nodes are raw Bayer sinks that cannot serve one. The
+usable device is `/dev/video0`, a v4l2loopback that something must feed.
 
-Two problems there:
+The obvious candidate, `v4l2-relayd`, was tried and abandoned:
 
-- `v4l2-relayd` shipped `VIDEOSRC=icamerasrc`, Intel's closed CamHAL, which has
-  no tuning data for this sensor. It falls back to an AR0234 tuning file and
-  fails in a loop (`CamHAL[ERR] Input stream was missing`), so the loopback
-  exists but nothing ever writes frames to it. Use `libcamerasrc` instead.
-- The service sandbox permits only `char-drm/media/intel-ipu6-psys/psys/
+- It shipped `VIDEOSRC=icamerasrc`, Intel's closed CamHAL, which has no tuning
+  data for this sensor. It falls back to an AR0234 tuning file and fails in a loop
+  (`CamHAL[ERR] Input stream was missing`), so the loopback exists but nothing
+  ever writes to it. `libcamerasrc` works instead.
+- Its service sandbox permits only `char-drm/media/intel-ipu6-psys/psys/
   video4linux`, but libcamera's software ISP needs `/dev/dma_heap/system`
   (char **248**). Without it: `Could not open any dma-buf provider` →
-  `disabling software debayering`, and no frames. **Testing the pipeline by
-  hand does not reproduce this** — it only fails inside the unit.
+  `disabling software debayering`, and no frames. **Testing the pipeline by hand
+  does not reproduce this** - it only fails inside the unit.
+- Even once working it was the bottleneck. Measured on this machine with the same
+  work either side: **1.3 fps through the relay against 29.9 fps** feeding the
+  loopback directly. The relay bridges two GStreamer pipelines through
+  appsink/appsrc, and that is where the frames went. This matters beyond frame
+  rate - the CPU pre-pass was written off as "a dead end on this hardware" on the
+  strength of numbers that were actually measuring the relay.
 
-Also constrain `libcamerasrc` to the target size. Left alone it picks the
-sensor's full-resolution mode and software-debayers 2560×1600 per frame, giving
-about 2 fps; constrained, libcamera selects the binned 1296×972 sensor mode and
-it runs at 28.
+So the relay is gone. `install-camera-service.sh` runs one pipeline straight into
+the loopback, and `ov5678-ondemand.service` starts it only while something is
+watching. See [On-demand](#on-demand-and-why-it-needs-a-placeholder).
 
-→ `tools/fix-browser-camera.sh`, `tools/tune-relay-pipeline.sh`
+Also constrain `libcamerasrc` to the target size. Left alone it asks for the
+sensor's full-resolution mode; constrained to 1280x720 the pre-pass window
+shrinks and it processes fewer pixels per frame.
+
+→ `tools/install-camera-service.sh`, `tools/fix-browser-camera.sh`
 
 ### 5. The sensor is RGB-IR, not Bayer at all (kernel) — ROOT CAUSE
 
@@ -306,58 +322,104 @@ control start working. → `tools/install-ccm.sh`, `tools/set-saturation.sh`
 Ubuntu 26.04, kernel 7.0.0-29, libcamera 0.7.0-1ubuntu2. Adapt as needed.
 
 `build-libcamera.sh` builds whatever `apt-get source libcamera` gives you, so it
-tracks your distro rather than pinning a release. It checks for the clamp before
-patching and tells you if the source has moved on — if the clamp is already gone
-in your version, skip the patch and keep the rest of step 4.
+tracks your distro rather than pinning a release.
 
-Prerequisites — all in the Ubuntu archive, no OEM PPA required:
+Prerequisites - all in the Ubuntu archive, no OEM PPA required:
 
 ```sh
 sudo apt install dkms build-essential "linux-headers-$(uname -r)" \
-                 v4l2-relayd v4l2loopback-dkms v4l-utils \
+                 v4l2loopback-dkms v4l-utils \
                  gstreamer1.0-plugins-good python3-pil
 ```
 
-`build-libcamera.sh deps` installs its own build dependencies on top of these.
+`v4l2-relayd` is **not** needed. It is replaced by `install-camera-service.sh`,
+which feeds the loopback directly - the relay's appsink/appsrc bridge throttled
+the pipeline to 1.3 fps against 29.9 for the same work.
 
 ```sh
-# 1. kernel modules (board data + ov5675 ACPI id + ipu-bridge entry) via DKMS
+# 1. kernel modules via DKMS: int3472 board data, ov5675 ACPI id, ipu-bridge entry
 sudo tools/dkms-install.sh
-printf 'options intel_skl_int3472_tps68470 front_reset=5 front_powerdown=-1 rail_map=1 rear_reset=-1 rear_powerdown=-1\n' \
-    | sudo tee /etc/modprobe.d/int3472-dell7320.conf
 sudo dracut --force --kver "$(uname -r)"      # also fixes the IPU6 firmware race
 sudo reboot
 
 # 2. verify the kernel side
 tools/check-camera.sh          # expects "Connected 2 cameras" and ov5675 in the graph
 
-# 3. make it usable from browsers
-sudo tools/fix-browser-camera.sh
-sudo tools/tune-relay-pipeline.sh
-
-# 4. colour: patched libcamera into /usr/local, nothing under /usr is touched
+# 3. patched libcamera into /usr/local; nothing under /usr is touched
 sudo tools/build-libcamera.sh deps
 sudo tools/build-libcamera.sh build
 sudo tools/build-libcamera.sh install
 sudo tools/install-tuning.sh
 
-# 5. colour correction (see "Colour tuning" - these numbers are per-camera)
-sudo tools/install-ccm.sh sat=1.8,wb=1.0972:1:2.6407
+# 4. colour matrix (per-camera - see "Colour tuning" before copying numbers)
+sudo tools/install-ccm.sh 1.8101,-0.3453,-0.4648,0.3076,0.4034,0.2890,-0.1110,-0.6389,1.7499
 
-# 6. verify colour
-tools/check-colour.sh
+# 5. lens shading, measured from YOUR unit: hold plain white paper over the lens
+sudo tools/measure-lens-shading.sh --raw     # writes data/lens-shading-measured-raw.bin
+
+# 6. the camera service, which also feeds /dev/video0 for browsers
+sudo SHARPNESS=0.5 DENOISE=0.15 IRSUB=2.0 tools/install-camera-service.sh
 
 # optional: hide the 64 dead ipu6 entries from the browser's camera list
 sudo tools/hide-raw-ipu6-nodes.sh
 ```
 
-Steps 1, 4 and 5 are all required to get colour right. Step 1 fixes the
-red/blue transposition, step 4 fixes the libcamera defects, step 5 corrects the
-residual white balance the GPU path leaves behind. Any one alone still looks
-wrong, which is what made this confusing to diagnose.
+Step 1 fixes the red/blue transposition and makes the sensor bind at all; step 3
+fixes the libcamera defects; steps 4-6 are colour and noise. Any one alone still
+looks wrong, which is what made this confusing to diagnose.
 
-**Do not copy the numbers in step 5.** They were solved for this camera in this
-room. Derive your own - see [Colour tuning](#colour-tuning).
+**Do not copy the matrix in step 4 blindly.** It was solved for this camera. It
+is included because it is a reasonable starting point and because a `Ccm` entry
+must exist at all for the saturation control to work - see
+[defect 7](#7-saturation-is-silently-inert-without-a-ccm-libcamera).
+
+**Do not skip step 5.** The shading map is per-unit. Intel ships tables for this
+module in its `.aiqb` tuning and `tools/extract-lens-shading.py` will read them,
+but measured against this camera they over-correct red by 17% and under-correct
+blue by 15%, leaving a warm cast in the corners. The measured map flattens the
+corners to within 0.4% on held-out frames.
+
+### Runtime knobs
+
+`install-camera-service.sh` takes these as environment variables:
+
+| variable | default | what it does |
+|---|---|---|
+| `SHARPNESS` | `0.0` | 0-1. Green detail vs noise in the mosaic conversion. 0 averages all 8 greens in the 4x4 cell into one value; 1 gives each output green its own quadrant. **A trade, not a win** - 1.0 measured 1.49x the detail and 1.43x the noise, leaving detail-to-noise flat. |
+| `DENOISE` | `0.25` | Weight given to the **current** frame in still areas, so **lower denoises harder**; `1.0` disables. 0.25 gives 2.0x less temporal noise, 0.15 gives 2.4x with more smearing after a scene cut. |
+| `DENOISE_THR` | `40` | Raw counts of change before a region counts as moving. The noise floor is estimated per frame and subtracted first, so this does not need retuning when the light changes. |
+| `IRSUB` | `1.0` | How much of the IR plane to subtract from R, G and B. Higher saturates more; above ~3.0 the shadows go magenta as green clamps at zero. **2.0 is the usable limit.** |
+| `SHADING` | measured map | Path to a per-channel gain map, or empty to disable. |
+| `EV` | `0` | Exposure compensation in stops. Ignored once the AGC is at its limit. |
+| `ASPECT` | `16:9` | `16:9` crops; `4:3` keeps the full field of view. |
+| `ONDEMAND` | `1` | Run the pipeline only while something has the loopback open. `0` for always-on. |
+
+### On-demand, and why it needs a placeholder
+
+The full pipeline costs ~78% of one CPU core. On a fanless 9 W detachable that is
+an audible fan and a hot lid for nothing when no application has the camera open,
+so `ov5678-ondemand.service` starts the real pipeline only while a consumer is
+attached, and stops it 15 s after the last one leaves. Idle cost drops to 5.5% of
+a core and the CPU sits at 43 C rather than 99 C.
+
+It needs `ov5678-placeholder.service` - a black `videotestsrc` at 1 fps - to hold
+the loopback open whenever the real pipeline is stopped. Two reasons, both
+discovered the hard way:
+
+* With **no** producer the loopback has no format at all, so a consumer fails
+  negotiation and exits in about **3.5 milliseconds**. Nothing can poll fast
+  enough to notice, so there is no "an app wants the camera" event to trigger on.
+* `exclusive_caps=1` means the capture node only exists while a producer holds
+  the device. The placeholder is that producer. **Do not set `exclusive_caps=0`**
+  to work around this: the node then advertises `Video Output` as well as
+  `Video Capture`, and browsers reject such a device. That was tried here and it
+  broke the camera in Brave and Firefox.
+
+The consequence is that an application opening the camera cold sees black frames
+for two or three seconds while the real pipeline starts. That is deliberate, and
+better than the open failing.
+
+Only `ov5678-ondemand` is enabled at boot; it owns the other two units.
 
 ### What step 6 should print
 
@@ -379,7 +441,7 @@ looking at if it is out:
 | `R/G` around 0.3–0.4, strong cyan cast | full step 4 not applied | re-run step 4 in order |
 | `R/G` around 0.55, cast reduced but present | no CCM installed | run step 5 |
 | balance neutral but colours plainly wrong (red objects look blue) | GBRG CFA patch not loaded | check `modinfo -n ov5675` resolves to `updates/dkms` |
-| saturation above ~30% | nothing from step 4 is in effect | check `systemctl show v4l2-relayd@default -p Environment` |
+| saturation above ~30% | nothing from step 4 is in effect | check `systemctl show ov5678-camera -p Environment` |
 | whites tinted lavender | blue coefficient too high for your light | re-derive it, see [Colour tuning](#colour-tuning) |
 
 Note the third row: **white balance can read perfectly neutral while every
@@ -403,8 +465,8 @@ sudo dracut --force --kver "$(uname -r)"
 sudo reboot
 ```
 
-`tune-relay-pipeline.sh` has no undo; `fix-browser-camera.sh revert` restores
-the relay configuration it edited. The `/usr/local` libcamera build is left on
+`install-camera-service.sh revert` removes the service and its two helper
+units. The `/usr/local` libcamera build is left on
 disk by `build-libcamera.sh revert` — remove it by hand if you want the space.
 
 ## Colour tuning
@@ -442,7 +504,7 @@ sudo tools/install-ccm.sh revert  # back out entirely
 ```
 
 `tools/try-ccm.py` renders a captured frame through candidate matrices offline,
-so you compare options side by side instead of restarting the relay for each.
+so you compare options side by side instead of restarting the service for each.
 The simulation is exact rather than approximate — the pipeline computes
 `gammaLut[CCM * (gains * (raw - blacklevel))]` with `kDefaultGamma = 2.2` and
 `kDefaultContrast = 1.0`, so linearising a capture, applying the matrix and
@@ -470,26 +532,45 @@ The values in step 5 came out of that process on this machine:
 
 ## Known limitations
 
-**Saturation, and it is a sensor limit not a software one.** Colours render
-undersaturated. A colour correction matrix would normally fix that, and it was
-attempted and abandoned - deliberately. Red and green fit cleanly (~1.5 diagonal,
-modest negative off-diagonals) but the blue row is unfittable:
+**Saturation, and it is a sensor limit not a software one.** Re-measured properly
+on 2026-08-17 from raw mosaic chart data, which removes the debayer, the CCM, the
+gamma curve and the AWB gains from the measurement. White-normalised, the
+dominant/next-channel ratio the sensor delivers against what sRGB demands:
 
-```
-patch            target B   camera B
-yellow                 31        236     <- least blue subject, highest blue reading
-blue flower           177        181
-blue sky              157        177
-cyan                  161        165
-```
+| patch | camera | target | shortfall |
+|---|---|---|---|
+| red | 1.40 | 9.49 | **6.8x** |
+| blue | 1.50 | 6.54 | **4.4x** |
+| green | 1.72 | 4.44 | 2.6x |
 
-Target blue spans 6x, camera blue only 2.4x, and the two are anti-correlated.
-With native `B/G 0.163` and a 4.9x AWB gain, blue is dominated by crosstalk and
-flare rather than blue light, so there is no relationship for least squares to
-find. Excluding shadow-corrupted dark patches made the blue row *worse*
-(-0.08 -> -0.43), confirming it is not a shadow-offset problem. The tools are
-kept (`tools/solve-ccm.py`, `tools/make-ccm-target.py`) but do not expect a
-usable matrix from this sensor without better equipment than a tablet screen.
+A 3x3 matrix that closes that gap needs off-diagonals of +-3, and the noise it
+amplifies settles the question:
+
+| matrix | worst-channel noise gain |
+|---|---|
+| the one that ships, `[1.8101, -0.3453, -0.4648, ...]` | **1.90x** |
+| best fit with per-channel IR subtraction | 3.89x |
+| best fit with a single IR coefficient | 5.34x |
+
+On a sensor that is already noise limited, "more accurate" costs 2-3x more noise.
+The shipped matrix is deliberately a compromise, and re-fitting is not worth
+attempting on this hardware.
+
+**Per-channel IR subtraction does not help** - measured, not assumed.
+`tools/fit-ir-coeffs.py` searches kR/kG/kB jointly with the matrix on raw chart
+data. Best per-channel (kR 3.25, kG 3.75, kB 0.00) beat the best single
+coefficient by **4.4%**, and both produced matrices that were not diagonally
+dominant. IR is only 7-14% of green, so subtracting it cannot manufacture a 7x
+separation. `IRSUB` remains useful as a taste knob and nothing more.
+
+**A screen is a poor colour target, and the AGC fights it.** The chart's mean is
+mid-grey, so the AGC exposes for the mean and lets white clip - measured
+`exposure 2016/2016, analogue_gain 2047/2047` (fully pegged) *and* white at
+`(251,251,251)` in the same frame. Brighter clips everything; dimmer pegs the AGC
+and white still clips. `EV` does nothing once the AGC is at its limit. Fixing this
+needs manual exposure with the AGC disabled, which the software ISP does not
+accept as a control. A screen also cannot produce a real black, which puts a large
+additive offset into the dark patches that a multiplicative matrix cannot model.
 
 **Blues are weak because of the demosaic, NOT the sensor or the lighting.**
 An earlier version of this file said the opposite - that ~16% native blue
@@ -567,7 +648,7 @@ differs:
 | `awb-evidence.sh` | native vs post-ISP colour balance in one run |
 | `dump-ipa-debug.sh` | read libcamera's own computed gains rather than inferring them |
 | `check-colour.sh` | current colour balance, no root needed |
-| `diagnose-fps.sh` | isolate frame-rate loss between libcamera and the relay |
+| `diagnose-fps.sh` | isolate frame-rate loss between libcamera and the loopback |
 | `demosaic-both-ways.sh` | capture one raw frame, demosaic as GRBG and GBRG, compare |
 | `check-rb-swap-raw.sh` | per-CFA-position response to a coloured subject, raw |
 | `solve-ccm.py`, `make-ccm-target.py` | fit a colour correction matrix from a displayed target |
@@ -609,75 +690,130 @@ Measurement logs from this machine are in `data/`.
 
 ## Upstream status
 
-**The kernel series was submitted on 2026-08-09** and is on the lists:
+**Patch 1/3 is upstream as v2, sent 2026-08-16:**
 
-  https://lore.kernel.org/linux-media/20260809042540.15849-1-adee.sahan@gmail.com/
+  https://lore.kernel.org/platform-driver-x86/20260816070108.9308-1-adee.sahan@gmail.com/
 
-Nothing merged yet. The libcamera half is deliberately held back until the
-kernel series settles, because how linux-media responds to the RGB-IR
-disclosure shapes how the libcamera side should be framed.
+Sent **standalone** to platform-driver-x86, not as part of the series. It is
+generated against **v7.2-rc7** with a `base-commit:` trailer, applies with
+`git am` to a pristine tree, and carries `Co-developed-by:`/`Signed-off-by:` for
+Charles Drolet, who found the correct reset line and ran the control test.
 
-| patch | destination |
-|---|---|
-| `kernel-patches/0001-*` int3472 board data | platform-driver-x86 |
-| `kernel-patches/0002-*` ov5675 ACPI id | linux-media |
-| `kernel-patches/0003-*` ipu-bridge entry | linux-media |
-| `upstream-libcamera/0001-ipa-simple-awb-Widen-*` AWB gain range | libcamera-devel |
-| `libcamera-patch/0001-*` AWB 4.0 clamp | **local 0.7.0 build only** - the row above replaces it upstream |
-| `libcamera/ov5675.yaml` black level | libcamera-devel |
-| `upstream-libcamera/0001-libcamera-sensor-*` sensor delays | libcamera-devel |
-| `Saturation` inert without a `Ccm` (report only) | libcamera-devel |
-| AWB gain floor of 1.0 (report only, unmeasured) | libcamera-devel |
-| GBRG CFA phase (`sensor-ov5675/ov5675.c`) | **not submittable** - a workaround, see below |
+It was **tested alone**, as a reviewer asked, in two configurations each with its
+own boot (`tools/test-patch1-isolated.sh`):
 
-The GBRG change is a workaround, not a fix, and should not be sent anywhere.
-The sensor is RGB-IR (defect 5); GBRG merely puts real red into the red channel
-at half the positions, which is why it beats the alternative. The better of two
-wrong answers.
+* patch 1 by itself, with `ov5675` and `ipu-bridge` reverted to their in-tree
+  versions and no module parameters anywhere - board data found, all seven rails
+  at the expected voltages, one dmesg line, **no sensor binds**. That last part is
+  the point: on its own the patch is inert, which is the honest answer to "what
+  does this do".
+* with patches 2 and 3 on top - reset resolves on `tps68470-gpio 5`, the supplies
+  bind as avdd/dvdd/dovdd on VSIO/AUX1/AUX2, and the camera streams. This mattered
+  more than expected: every picture this project produced had come from a
+  development module with `front_reset=5 rail_map=1` passed as **module
+  parameters**. The hardcoded values in the patch had never driven the hardware
+  until that test.
 
-**The real fix needs an ABI addition first.** There is no RGB-IR media bus code
-in mainline V4L2 - 36 Bayer codes, none for an IR mosaic - and libcamera's
-`BayerFormat` models 2x2 by construction. This is not specific to this sensor:
-`ox05b1s` declares `SGRBG10` for an RGB-IR part of the same class and
-resolution, and TI carries 4x4 RGB-IR formats in their vendor tree for the
-OV2312 and OX05B1S which never reached mainline. The next step is an RFC to
-linux-media proposing those codes, aligned with TI's naming rather than
-inventing a second convention.
+The first v1 series (2026-08-09) is at
+`https://lore.kernel.org/all/20260809042540.15849-1-adee.sahan@gmail.com/`. Its
+1/3 had the **wrong GPIO** (line 3, and a powerdown pin that does not exist) and
+is superseded.
 
-`upstream-libcamera/AWB-BUG-REPORT.md` writes up all four libcamera defects
-with measurements. Its EGL section states which explanations have been *ruled
-out* as well as what was observed - an earlier draft asserted a mechanism that
-turned out to be wrong, and reporting a confident wrong cause is worse than
-reporting an honest observation.
+**Patches 2/3 and 3/3 are held.** Sakari Ailus objected that declaring `SGRBG10`
+for a sensor that is not Bayer is wrong, and he is right. A follow-up went to that
+thread on 2026-08-16 reporting the RGB-IR investigation in full, including
+retractions of two earlier claims. The drafts in this repo are the **v1**
+versions, generated against 7.0 with the old GPIO mapping - do not send them as
+they stand.
 
-## Work in progress: RGB-IR support
+| patch | destination | state |
+|---|---|---|
+| int3472 board data | platform-driver-x86 | **sent as v2** |
+| ov5675 ACPI id | linux-media | held, needs the format question settled |
+| ipu-bridge entry | linux-media | held with the above |
+| AWB gain range | libcamera-devel | not sent |
+| debayer out-of-bounds crash fix | libcamera-devel | not sent, and unrelated to RGB-IR |
+| `Saturation` inert without a `Ccm` (report only) | libcamera-devel | not sent |
 
-`libcamera-rgbir/` holds the first piece of a proper fix: a converter turning
-the 4x4 RGB-IR mosaic into a half-resolution 2x2 Bayer image, so libcamera's
-existing debayer, statistics, AWB and CCM all work unmodified. That is the
-architecture Intel's own IPU6 hardware uses (its block is called `x2b_rgbir`).
+**The real fix needs an ABI addition first.** There is no RGB-IR media bus code in
+mainline V4L2 - checked at v7.2-rc7, 36 Bayer codes and none for an IR mosaic -
+and libcamera's `BayerFormat` models 2x2 by construction. The `ox05b1s` driver
+often cited as precedent declares `SGRBG10` for an RGB-IR part of this class, but
+it lives in **NXP's i.MX BSP tree**, not mainline and not media_stage, so it is a
+weaker precedent than it looks.
 
-Half resolution is not a compromise. A 4x4 RGB-IR cell holds exactly two red
-and two blue pixels, and a 2x2 Bayer cell at half resolution needs exactly one
-of each, so chroma maps across with nothing discarded. Green averages four into
-one - the same reduction the sensor's binned mode already performs, except
-binning averages IR in with colour and this does not.
+Intel's own files say plainly what the part is, which is worth citing in any RFC:
+`graph_settings_OV5678_*.xml`, shipped in the Windows driver package and
+Apache-2.0 licensed, declares `sensor_type="RGB_IR"` and
+`bayer_order="GIGI_RGBG_GIGI_BGRG"` with exactly **one** mode - against
+`bayer_order="GRBG"` and two modes for the OV8856 on the same machine. That order
+string is one of the 4x4 entries in Intel's public
+[`ia_cmc_types.h`](https://github.com/intel/ipu6-camera-bins/blob/main/include/ipu6/ia_imaging/ia_cmc_types.h).
 
-Validated against the Python reference on a real captured frame, agreeing to
-0.0002 in channel ratios (`libcamera-rgbir/check.sh`). It is not yet wired into
-libcamera; the remaining work is buffer plumbing in `SoftwareIsp`, telling
-libcamera the sensor is RGB-IR at all, and the pipeline handler accepting
-full-res in with half-res out.
+`upstream-libcamera/AWB-BUG-REPORT.md` writes up the libcamera defects with
+measurements. Its EGL section states which explanations have been *ruled out* as
+well as what was observed - an earlier draft asserted a mechanism that turned out
+to be wrong, and reporting a confident wrong cause is worse than reporting an
+honest observation.
 
-**Frame rate is not the obstacle** - full resolution measured at 29.95 fps
-against 30.69 at 1280x720, so four times the pixels cost nothing
-(`tools/bench-fullres.sh`).
+## RGB-IR support (shipping)
 
-[`docs/aiqb-format.md`](docs/aiqb-format.md) documents how Intel's `.aiqb`
-tuning files decode - lens shading, colour matrices and the infrared model -
-and where to get the struct definitions, which Intel publishes. The tuning
-files themselves are proprietary and are deliberately not in this repository;
-extract them from a Windows install as described there.
+`libcamera-rgbir/` is no longer work in progress - it is what the camera runs on.
+`RgbIrToBayer` turns the 4x4 RGB-IR mosaic into a half-resolution 2x2 Bayer image
+before libcamera's debayer sees it, so the existing debayer, statistics, AWB and
+CCM all work unmodified. That is the architecture Intel's own IPU6 hardware uses;
+its block is called `x2b_rgbir`.
+
+Half resolution is not a compromise. A 4x4 RGB-IR cell holds exactly two red and
+two blue pixels, and a 2x2 Bayer cell at half resolution needs exactly one of
+each, so chroma maps across with nothing discarded. Green averages four into one -
+the same reduction the sensor's binned mode performs, except binning averages IR
+in with colour and this does not, which is why the binned mode is unusable here.
+
+Three things were added on top of the plain conversion:
+
+**Per-quadrant green (`SHARPNESS`).** The plain conversion averages all eight
+greens in the cell into one value and writes it to *both* green slots of the
+output quad, so luma is flat across the cell - effectively 4x4 binning where the
+geometry only calls for 2x. Each 2x2 quadrant holds exactly two greens, so the
+two slots can instead carry the top-left and bottom-right quadrant means. On a
+synthetic grating at output-Nyquist the old averaging **cancels the signal
+completely** (peak-to-peak 1 against 301). On real frames it is 1.49x the vertical
+detail - but also 1.43x the noise, leaving detail-to-noise flat, so it is exposed
+as a knob rather than a default.
+
+**Lens shading.** Applied per channel *before* the mosaic is collapsed, which is
+the only point at which each pixel's channel is still known. Measured from raw
+mosaic frames of a flat field: corners go from 0.28 of centre to **1.00**,
+validated on held-out frames. Only R, G and B are corrected - the IR plane needs
+up to 16x at the edge and IR is subtracted from the colour channels *before* this
+point, so applying it would multiply IR's noise into R, G and B exactly where they
+are weakest.
+
+**Temporal denoise (`temporal_denoise.cpp`).** The sensor is noise limited, not
+resolution limited, so the only real gain comes from using more photons and the
+previous frame is the cheapest source. Motion is decided per block with the
+frame's **own noise floor subtracted** - per-sample differences *are* the noise in
+a still scene, so using them directly throttles the very averaging this exists to
+do (1.44x instead of 2.6x at the same setting). 2.0x less temporal noise at the
+default.
+
+Only the rows the debayer actually reads are converted. The pre-pass emits
+1296x972 and the debayer reads a 1280x720 window, so 26% of both the conversion
+and the denoise was being spent on rows that were then discarded; restricting it
+took streaming CPU from 104% of one core to 78%.
+
+Test programs live alongside the code and each answers one question:
+`test-sharp.cpp` (does per-quadrant green keep more detail), `compare-real.cpp`
+(the same on a real frame, with noise measured too), `test-denoise.cpp` (noise
+reduction against smearing on a captured sequence).
+
+[`docs/aiqb-format.md`](docs/aiqb-format.md) documents how Intel's `.aiqb` tuning
+files decode - lens shading, colour matrices and the infrared model - and where to
+get the struct definitions, which Intel publishes. `tools/extract-lens-shading.py`
+reads the lens shading record out of one. The tuning files themselves are
+proprietary and are deliberately not in this repository; extract them from a
+Windows install as described there.
 
 ## Licence
 

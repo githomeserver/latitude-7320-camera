@@ -1,0 +1,52 @@
+=== OV5678 patch 1/3 ALONE - 2026-08-16T15:33:43+10:00 - kernel 7.0.0-29-generic ===
+  detected PHASE A  (patch 1/3 alone)
+
+--- Isolation: are patches 2/3 and 3/3 really out of the way? ---
+  ov5675 in use: /lib/modules/7.0.0-29-generic/kernel/drivers/media/i2c/ov5675.ko.zst
+  PASS  ov5675 is STOCK (no OVTI5678 ACPI id -> patch 2/3 absent)
+  ipu-bridge in use: /lib/modules/7.0.0-29-generic/kernel/drivers/media/pci/intel/ipu-bridge.ko.zst
+  PASS  ipu-bridge is STOCK (no OVTI5678 sensor config -> patch 3/3 absent)
+  PASS  front sensor UNBOUND (expected without 2/3 - this is the isolation)
+  PASS  int3472 module has NO parameters (upstream build, not the dev one)
+  PASS  no modprobe.d parameter file in play
+
+--- The patch does its job ---
+  PASS  INT3472:07 is BOUND to int3472-tps68470
+dmesg: write error
+  PASS  no "No board-data found" in dmesg (the message Charles watched for)
+  PASS  tps68470 GPIO chip registered
+
+  regulator                 expected      actual        state
+  CORE              1200000      1200000  disabled  ok
+  ANA               2815200      2815200  disabled  ok
+  VCM               2815200      2815200  disabled  ok
+  VIO               1800600      1800600  ?         ok
+  VSIO              1800600      1800600  disabled  ok
+  AUX1              1213200      1213200  disabled  ok
+  AUX2              1800600      1800600  disabled  ok
+  PASS  all 7 rails registered
+  PASS  all 7 voltages match the patch
+
+--- VIO always-on (changed in v2; never tested on hardware before) ---
+  VIO sysfs state : <empty or absent>
+  VIO debugfs line:  VIO                              1    0      0 unknown  1800mV     0mA  1800mV  1800mV 
+  PASS  VIO enabled with no consumer (always_on took effect)
+
+--- Consumer supply mapping (needs debugfs) ---
+   CORE                             0    0      0 unknown  1200mV     0mA  1200mV  1200mV 
+   ANA                              0    0      0 unknown  2815mV     0mA  2815mV  2815mV 
+   VCM                              0    0      0 unknown  2815mV     0mA  2815mV  2815mV 
+   VIO                              1    0      0 unknown  1800mV     0mA  1800mV  1800mV 
+   VSIO                             0    0      0 unknown  1800mV     0mA  1800mV  1800mV 
+   AUX1                             0    0      0 unknown  1213mV     0mA  1213mV  1213mV 
+   AUX2                             0    0      0 unknown  1800mV     0mA  1800mV  1800mV 
+
+--- No secondary effects ---
+  PASS  no int3472/tps68470 errors in dmesg
+  rear sensor OVTI8856:00: unbound
+  (unbound was also the state BEFORE this change - not a regression)
+
+  int3472/tps68470 dmesg lines:
+    [    3.802393] int3472-tps68470 i2c-INT3472:07: TPS68470 REVID: 0x21
+
+=== 12 passed, 0 failed ===

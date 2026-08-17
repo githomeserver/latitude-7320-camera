@@ -7,6 +7,19 @@
 #
 # Run as root:  sudo ./provision-machine.sh
 #
+# NOTE ON PIN ASSIGNMENT — obsolete as of 2026-08-16, kept for the reasoning.
+#
+# None of this applies any more. DKMS package camera-dell7320 0.4 carries the
+# UPSTREAM board data (the patch archived at
+# https://lore.kernel.org/platform-driver-x86/20260816070108.9308-1-adee.sahan@gmail.com/),
+# which hardcodes reset on tps68470-gpio 5 and the VSIO/AUX1/AUX2 rails, and
+# accepts NO module parameters at all. Writing the modprobe.d file below would
+# now make the module fail to load with "unknown parameter". Step 3 therefore
+# removes it instead of writing it.
+#
+# The historical reasoning follows, because it explains why the pins are what
+# they are.
+#
 # NOTE ON PIN ASSIGNMENT — read before changing it.
 #
 # This deliberately installs with NO GPIO pin assignment at all
@@ -52,16 +65,16 @@ grep -qxF 'i2c-dev' /etc/modules-load.d/i2c-dev.conf 2>/dev/null \
     || echo 'i2c-dev' > /etc/modules-load.d/i2c-dev.conf
 
 echo
-echo "== 3. module options: no pin assignment (see header) =="
-# rail_map=1 is NOT optional and NOT a default. It selects the VSIO/AUX1/AUX2
-# -> avdd/dvdd/dovdd mapping (Dell 7212 prior art), which is what the loaned
-# unit was validated with AND what the sent patch 1/3 ships. rail_map=0 is the
-# "conventional" ANA/CORE/VSIO mapping the notes explicitly deprecate, and the
-# module's compiled-in default. Omitting it silently selects the wrong rails
-# and the sensor fails to identify with -EIO.
-printf 'options intel_skl_int3472_tps68470 front_reset=-1 front_powerdown=-1 rail_map=1 rear_reset=-1 rear_powerdown=-1\n' \
-    > /etc/modprobe.d/int3472-dell7320.conf
-cat /etc/modprobe.d/int3472-dell7320.conf
+echo "== 3. module options: none, and any stale file must go =="
+# The upstream board data takes no parameters. A leftover int3472-dell7320.conf
+# from an older provisioning run makes modprobe fail outright, so remove it
+# rather than assume it is absent.
+if [ -e /etc/modprobe.d/int3472-dell7320.conf ]; then
+    rm -f /etc/modprobe.d/int3472-dell7320.conf
+    echo "  removed stale /etc/modprobe.d/int3472-dell7320.conf (module takes no parameters)"
+else
+    echo "  none needed - reset pin and rails are hardcoded in the board data"
+fi
 
 echo
 echo "== 4. DKMS modules =="

@@ -1,14 +1,42 @@
 #!/bin/bash
-# Swap the in-tree int3472 tps68470 module for the locally built one and report.
+# OBSOLETE - DO NOT USE. Kept because the reasoning below is worth having.
 #
-# This touches only the INT3472 PMIC path. It does not load, bind or otherwise
-# involve the IPU6, so it cannot hit the intel_ipu6_isys runtime-PM panic.
+# This swapped the int3472 tps68470 module at runtime to test board-data
+# changes. That CANNOT WORK, and running it leaves the camera dead until you
+# reboot.
 #
-# Run as root:  sudo ./test-load.sh [key=value ...]
-#   e.g.        sudo ./test-load.sh rear_reset=9 rear_powerdown=7
-#               sudo ./test-load.sh rail_map=1
+# INT3472 probes exactly once per boot. skl_int3472_tps68470_probe() counts its
+# consumers with for_each_acpi_consumer_dev(), which walks the global ACPI
+# dependency list, and the first successful probe calls
+# acpi_dev_clear_dependencies() -> acpi_scan_clear_dep(), which DELETES those
+# entries. They are never recreated. So after unloading, the reload fails with
+#
+#   int3472-tps68470 i2c-INT3472:07: INT3472 seems to have no dependents
+#
+# and no amount of unbind/bind or modprobe brings it back. Confirmed the hard
+# way on 2026-08-16.
+#
+# It is also obsolete for a second reason: the module no longer takes any
+# parameters. DKMS package camera-dell7320 0.4 carries the upstream board data,
+# which hardcodes reset on tps68470-gpio 5 and the VSIO/AUX1/AUX2 rails.
+#
+# To test a board-data change, use tools/test-patch1-isolated.sh, which builds
+# from the patch and reboots.
 
 set -u
+
+cat >&2 <<'WARN'
+REFUSING TO RUN. This tool cannot work and would leave the camera dead.
+
+INT3472 can only probe once per boot - the ACPI _DEP entries are deleted by the
+first successful probe, so reloading the module gets "INT3472 seems to have no
+dependents" and nothing brings it back short of a reboot.
+
+Use:  sudo tools/test-patch1-isolated.sh install    (then reboot)
+
+See the header of this file for the full explanation.
+WARN
+exit 1
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

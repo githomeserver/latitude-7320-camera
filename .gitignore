@@ -18,6 +18,10 @@ modules.order
 
 # Captured frames
 *.png
+# Webcam captures are photographs of somebody's room. The measurement logs
+# beside them are text and carry the same evidence without the picture.
+*.jpg
+*.jpeg
 *.bin
 
 # Python bytecode

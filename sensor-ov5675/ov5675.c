@@ -499,6 +499,16 @@ struct ov5675 {
 	struct v4l2_subdev sd;
 	struct media_pad pad;
 	struct v4l2_ctrl_handler ctrl_handler;
+	/*
+	 * How many of supported_modes[] this particular part may use. The
+	 * OVTI5678 carries a 4x4 RGB-IR colour filter array, and the 1296x972
+	 * mode is 2x2 binned: binning averages the infrared pixels together
+	 * with the colour ones, destroying the mosaic before anything
+	 * downstream can read it. Intel's own graph settings list exactly one
+	 * mode for this part, against several for the plain-Bayer OV8856
+	 * alongside it. So expose only the full-resolution mode there.
+	 */
+	unsigned int num_modes;
 	struct clk *xvclk;
 	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data supplies[OV5675_NUM_SUPPLIES];
@@ -1045,7 +1055,7 @@ static int ov5675_set_format(struct v4l2_subdev *sd,
 	s32 vblank_def, h_blank;
 
 	mode = v4l2_find_nearest_size(supported_modes,
-				      ARRAY_SIZE(supported_modes), width,
+				      ov5675->num_modes, width,
 				      height, fmt->format.width,
 				      fmt->format.height);
 
@@ -1136,7 +1146,9 @@ static int ov5675_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(supported_modes))
+	struct ov5675 *ov5675 = to_ov5675(sd);
+
+	if (fse->index >= ov5675->num_modes)
 		return -EINVAL;
 
 	if (fse->code != MEDIA_BUS_FMT_SGBRG10_1X10)
@@ -1324,6 +1336,12 @@ static int ov5675_probe(struct i2c_client *client)
 	}
 
 	mutex_init(&ov5675->mutex);
+	ov5675->num_modes = ARRAY_SIZE(supported_modes);
+	if (acpi_dev_hid_uid_match(ACPI_COMPANION(ov5675->dev), "OVTI5678", NULL)) {
+		ov5675->num_modes = 1;
+		dev_info(ov5675->dev,
+			 "OVTI5678: RGB-IR, hiding the binned mode (binning destroys the 4x4 mosaic)");
+	}
 	ov5675->cur_mode = &supported_modes[0];
 	ret = ov5675_init_controls(ov5675);
 	if (ret) {
