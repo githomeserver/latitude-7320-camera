@@ -69,7 +69,12 @@ DENOISE_THR="${DENOISE_THR:-40}"
 # audible fan and a hot lid for nothing when no app is using the camera.
 # ONDEMAND=0 reverts to the always-on behaviour.
 ONDEMAND="${ONDEMAND:-1}"
-SHADING="${SHADING-$(cd "$HERE/.." && pwd)/data/lens-shading-measured-raw.bin}"
+_default_shading="$(cd "$HERE/.." && pwd)/data/lens-shading-measured-raw.bin"
+# A fresh clone has no measured map - that comes from measure-lens-shading.sh
+# --raw, which needs the user to hold white paper over the lens. Default to none
+# rather than to a path that does not exist, so a first install is quiet.
+[ -e "$_default_shading" ] || _default_shading=""
+SHADING="${SHADING-$_default_shading}"
 
 # Exposure-value offset, in stops, applied while auto-exposure stays enabled.
 # Dimming the subject does NOT reduce exposure - the AGC simply exposes longer

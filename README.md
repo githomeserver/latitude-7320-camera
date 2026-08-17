@@ -42,6 +42,104 @@ needed here because of a firmware loading race. You do not need to understand th
 camera stack to follow [Installing](#installing); you do need to run the steps in
 order, because each one depends on the last.
 
+## Quick start: just make the camera work
+
+Follow this if you want a working camera and nothing else. It stops before any
+colour work, so **the picture will have a heavy yellow cast and visible blocky
+patterning** - that is normal here and is explained in
+[The short version](#the-short-version). Fixing it is the rest of this document.
+
+> **This installs kernel modules. Read this paragraph.**
+>
+> Steps 3 and 4 build and load out-of-tree kernel modules and regenerate your
+> early-boot image. On the wrong machine they do nothing useful, and a broken
+> initramfs can leave a system that will not boot. Nothing here is exotic - it is
+> DKMS and `dracut`, the same mechanism graphics and wifi drivers use - but if
+> this is a machine you cannot afford to have down for an evening, take a backup
+> or a snapshot first. Every change is listed in
+> [Uninstalling](#uninstalling) and is reversible. Your distribution's own
+> libcamera is never touched.
+
+**1. Confirm this is the right machine.** Must print `Latitude 7320 Detachable`:
+
+```sh
+cat /sys/class/dmi/id/product_name
+```
+
+If it prints `Latitude 7320` without "Detachable", stop - that is a different
+laptop with no IPU6 and none of this applies.
+
+**2. Install what is needed.** All from the Ubuntu archive:
+
+```sh
+sudo apt install dkms build-essential "linux-headers-$(uname -r)" \
+                 v4l2loopback-dkms v4l-utils gstreamer1.0-plugins-good
+```
+
+**3. Build and install the kernel modules:**
+
+```sh
+git clone https://github.com/githomeserver/latitude-7320-camera.git
+cd latitude-7320-camera
+sudo tools/dkms-install.sh
+```
+
+It refuses to run on any other model. There are no module parameters to set - if
+an older attempt left `/etc/modprobe.d/int3472-dell7320.conf` behind, delete it.
+
+**4. Regenerate the boot image and reboot.** This is not optional: without it the
+IPU6 asks for its firmware before the root filesystem is available, and the
+camera fails at boot roughly half the time.
+
+```sh
+sudo dracut --force --kver "$(uname -r)"     # Ubuntu 26.04
+# older Ubuntu: sudo update-initramfs -u -k "$(uname -r)"
+sudo reboot
+```
+
+**5. Check the kernel side came up:**
+
+```sh
+tools/check-camera.sh
+```
+
+Every line should say `PASS`. If the sensor line fails, the camera is not
+powered - see [Diagnostics](#diagnostics); do not continue to step 6, because it
+cannot help.
+
+**6. Give applications a normal camera device.** Browsers cannot use the IPU6's
+raw nodes, so this feeds a v4l2loopback device they can open:
+
+```sh
+sudo tools/install-camera-service.sh
+```
+
+**7. Test it.** Open <https://webcamtests.com> or your video-call app and pick
+**Virtual Camera**.
+
+```sh
+# or from the terminal:
+gst-launch-1.0 v4l2src device=/dev/video0 ! videoconvert ! autovideosink
+```
+
+You should see a live picture, yellow-cast and blocky. **That means everything
+worked.** The cast is the 4x4 RGB-IR mosaic being read as ordinary Bayer: the
+channel labelled blue is actually infrared, which is dark, so the image goes
+yellow.
+
+**To fix the colour**, continue with [Installing](#installing) from step 3 - it
+builds a patched libcamera into `/usr/local` and adds the RGB-IR conversion, lens
+shading and denoise. Budget an hour, mostly compiling.
+
+**To undo everything:**
+
+```sh
+sudo tools/install-camera-service.sh revert
+sudo dkms remove "camera-dell7320/$(dkms status camera-dell7320 | head -1 | cut -d/ -f2 | cut -d, -f1)" --all
+sudo dracut --force --kver "$(uname -r)"
+sudo reboot
+```
+
 ## The short version
 
 **`ov5675.c` drives it — but the sensor is RGB-IR, and no Linux driver can

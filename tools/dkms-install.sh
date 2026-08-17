@@ -29,7 +29,7 @@ fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 NAME="camera-dell7320"
-VER="0.3"
+VER="0.4"   # 0.4 = upstream v2 board data, no module parameters
 DEST="/usr/src/$NAME-$VER"
 # Every earlier package/version, so a rebuild never trips over
 # "DKMS tree already contains" - including the same version, which is
