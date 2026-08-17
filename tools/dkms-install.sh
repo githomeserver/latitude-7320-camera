@@ -15,6 +15,17 @@
 
 set -eu
 
+# The board data matches on DMI strings, so these modules do nothing on any other
+# machine - and there is a Dell Latitude 7320 *laptop* which is a different model
+# without an IPU6. Refuse rather than install modules that cannot help.
+MODEL="$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unknown)"
+if [ "$MODEL" != "Latitude 7320 Detachable" ]; then
+    echo "This machine reports: $MODEL" >&2
+    echo "These modules only do anything on a 'Latitude 7320 Detachable'." >&2
+    echo "Set FORCE=1 to install anyway." >&2
+    [ "${FORCE:-0}" = 1 ] || exit 1
+fi
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 NAME="camera-dell7320"

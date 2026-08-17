@@ -1,0 +1,226 @@
+From: Sahan Nissanka <adee.sahan@gmail.com>
+To: Sakari Ailus <sakari.ailus@linux.intel.com>
+Cc: platform-driver-x86@vger.kernel.org,
+	linux-media@vger.kernel.org,
+	dan.scally@ideasonboard.com,
+	hansg@kernel.org,
+	ilpo.jarvinen@linux.intel.com,
+	mchehab@kernel.org,
+	linux-kernel@vger.kernel.org
+Subject: Re: [PATCH 2/3] media: i2c: ov5675: Add OVTI5678 ACPI id
+In-Reply-To: <20260810092457.12357-1-adee.sahan@gmail.com>
+References: <20260809042540.15849-1-adee.sahan@gmail.com>
+ <20260809042540.15849-3-adee.sahan@gmail.com>
+ <anmHRjxruBaYQRaC@kekkonen.localdomain>
+ <20260810092457.12357-1-adee.sahan@gmail.com>
+
+Hi Sakari,
+
+I said I would report back on whether this sensor can be programmed to emit
+Bayer, either way. A replacement machine arrived, so here is the answer, and
+a correction to something I told you earlier.
+
+Short version: I can find no way to make it emit Bayer, I have now looked
+directly at the sensor rather than inferring from Intel's configuration, and
+the module's own factory label says it is RGB-IR.
+
+## Correction first
+
+In my previous reply I said the Windows driver "reads external configuration
+through an ExtFilesPath value under its service key, from a BSPDRIVERS
+store". That was wrong and I would rather withdraw it than leave it for
+someone else to chase. Those strings are in the binary but the code path is
+unused: there is no such directory on either Windows install I have looked
+at, and the value is unset under HKLM\SYSTEM\CurrentControlSet\Services. I
+inferred a mechanism from strings without checking it worked.
+
+## Intel's own configuration files say RGB-IR, in as many words
+
+I have since had the whole System32 from the factory image, and the useful
+thing in it turned out not to be the driver binary but a configuration file
+beside it. Two byte-identical copies of graph_settings_OV5678_*.xml ship in
+System32\drivers, Apache-2.0, Copyright Intel, and the first content line is:
+
+  <sensor_modes sensor_name="OV5678" csi_port="0" metadata="0"
+                interlaced="0" bayer_order="GIGI_RGBG_GIGI_BGRG">
+
+with exactly one mode beneath it:
+
+  <sensor_mode name="2592X1944" id="0" width="2592" height="1944"
+               fps="30" bpp="10" sensor_type="RGB_IR" ...>
+
+That is Intel, for this exact part, declaring a 4x4 mosaic, a sensor type
+of RGB_IR, and a single mode with no binned variant. The order string is
+not ad-hoc; it is one of the 4x4 entries in Intel's public enum [3]:
+
+  cmc_bayer_order_gigi_rgbg_gigi_bgrg,   /*!< Order: 1st row: G I G I,
+    2nd row: R G B G, 3rd row: G I G I, 4th row: B G R G (4x4). */
+
+kept in a cmc_bayer_order_4x4 family separate from the 2x2 orders. It
+matches the pattern I measured over i2c position for position, and I had
+not seen the file when I measured it.
+
+The same directory carries graph settings for the rear OV8856 on this
+machine. Those say bayer_order="GRBG", with two modes. Same vendor, same
+generation, same file format, and the two parts are described differently.
+
+I have to correct something I told you, since I am now citing these files.
+I said ov5678.sys was the only file on the system referencing the part.
+That is wrong: eight files under System32 contain the string, including the
+two XMLs above and Intel's iacamera64 extension INFs, and the .sys itself
+carries it mostly as UTF-16. I checked the file count and not the claim.
+
+The narrower point I was making does hold. No mode register table is stored
+as data anywhere in the driver: 182424 bytes total, 19 KB .rdata and 7 KB
+.data on disk, and the longest run of ordered (u16 register, u8 value)
+records anywhere in the image is 21, against the 150 writes one mode of
+ov5675.c issues. The register-dump facility I hoped to use
+(C:\OV5678reg.txt) has no code referencing it, unlike the NVM dump paths
+which do. So the register programming is built in code - but the pipeline
+configuration is plain data, and that data says RGB-IR.
+
+## So I tested the sensor instead, which is a better answer anyway
+
+Even a perfect capture of Windows' register writes would only show what
+Intel chose to do. Testing the part directly shows what it can do.
+
+I mapped its register space over i2c across 0x3000-0x5fff, validating every
+read against the chip id at 0x300a (00 56 75) so a bad read could not pass
+as data. ov5675.c issues 150 writes to 132 distinct registers across 14
+pages; I looked for pages
+that are populated but never written, since those are the uncharacterised
+ones. After removing aliases the candidates collapse:
+
+  0x51xx, 0x56xx   512 registers, all zero (unimplemented reads as 0x00)
+  0x41xx           byte-for-byte alias of 0x40xx
+  0x3300           appears to hold 128 registers; is 16, aliased 8x
+                   (only the low 5 bits decode). Contents are a threshold
+                   ladder: 0x00c8 0x0190 0x0258 0x0320.
+  0x5800           a second instance of the DPC block configured at 0x5780,
+                   differing in two bytes
+  0x3200, 0x3d00, 0x3e00, 0x3f00, 0x4300, 0x5a00   2 to 10 registers each
+
+Nothing resembling a CFA or output-format control exists in that space.
+
+I then bit-swept 0x5000-0x5003, the ISP control block, of which ov5675.c
+writes only 0x5000. All 32 bits, one at a time, capturing a full-resolution
+frame after each and measuring the mean of all 16 positions of the 4x4 cell.
+Four bits changed the image and all four are accounted for:
+
+  0x5000 bit0   black level correction enable (every position lifts by the
+                ~64 count pedestal)
+  0x5002 bit5   output saturates, all 16 positions at 1023
+  0x5003 bit3   the same
+  0x5002 bit1   a one-column CFA phase shift: every position takes its
+                right-hand neighbour's value
+
+That last one is the only interesting one, and it is decisive against a
+Bayer mode rather than for it: after the shift the cell still contains
+exactly four dark positions out of sixteen. The infrared pixels are still
+there, merely relabelled. A real Bayer mode would remove that cluster
+entirely. For reference the baseline cell reads green 281-285, IR 82.6-82.8,
+red 201.9, blue 177.5, and the four IR positions agree with each other to
+under 1%.
+
+This is not exhaustive: I have not mapped outside 0x3000-0x5fff, and I have
+no register documentation for this variant. But within the space the driver
+touches and the space adjacent to it, there is no such control.
+
+## Two further pieces of evidence
+
+I read the module EEPROM at i2c 0x51 - it needs the sensor's rails up, which
+is why it had not been read before. Near the end of the payload, in plain
+ASCII:
+
+    W7G97\0  ASSY,CMRA,5M,RGBR,MIPI,0MIC,FF\0  0BF501,
+
+That is Dell's own part description for the module: 5 megapixel, RGBR,
+MIPI, no microphone, fixed focus. 0BF501 matches the ACPI _DDN. I have not
+seen this data on Linux before; Windows writes it to NVM dump files that no
+install I have seen actually produced.
+
+And I can replace my earlier citation of the closed iacamera64.sys with a
+public one. Intel's own open-source tree declares the conversion block:
+
+  IPU6_FW_PSYS_ISA_X2B_SVE_RGBIR_ID
+  drivers/media/pci/intel/ipu6/psys/ipu6-platform-resources.h
+  in github.com/intel/ipu6-drivers
+
+"X2B" being X-to-Bayer. That repo also contains no ov5678 driver at all, so
+Intel never shipped one for Linux.
+
+## Where that leaves the patch
+
+I think it leaves your condition unmet, and I am not going to argue around
+that. The sensor emits RGB-IR and I cannot make it do otherwise, so
+declaring SGRBG10 describes it incorrectly however convenient that is for
+getting a picture.
+
+So: I will hold 2/3 for the metadata series rather than press it, and follow
+your branch. If it would help to have a non-Bayer 4x4 pattern exercising the
+CFA-pattern control early, I have hardware and I am happy to test.
+
+Two things I would value your view on for v2, both prompted by this being a
+distinct part rather than an OV5675 variant.
+
+First, should it register under a distinct name? Userspace picks tuning by
+sensor model, so as written my patch makes an RGB-IR part indistinguishable
+from a real OV5675, and any tuning shipped for it would be wrong for the
+genuine article. Reusing ov5675.c for the programming interface while
+reporting a different model seems more honest than either pretending it is
+an OV5675 or duplicating the driver, but I do not know if that is idiomatic.
+
+Second, this part should probably not expose its binned mode at all.
+Binning averages the infrared pixels together with the colour ones and
+destroys the mosaic, and Intel's own graph settings for this sensor declare
+exactly one mode, 2592x1944, against two for the plain-Bayer OV8856 on the
+same machine. I have a change gating the
+mode list on the ACPI id so real OV5675 parts are unaffected. Worth
+including, or noise until the format question is settled?
+
+The first of those is really the same question I asked about ox05b1s and did
+not want to argue from: it declares SGRBG10 for an RGB-IR sensor of this
+class. If that is regarded as a precedent to follow, my original patch is
+fine as it stands; if it is regarded as a mistake, then a distinct model name
+is the way to avoid repeating it, and I would rather take the second reading.
+No need to answer both - the ox05b1s one covers it.
+
+Separately, on 1/3, where I said I would verify the mapping on the
+replacement machine and check whether the board data generalises across
+units rather than describing the one I had. Both are done.
+
+The GPIO mapping in v1 was wrong, as I reported. Charles Drolet found it and
+I have now reproduced it on a second Latitude 7320 Detachable - reset is
+tps68470-gpio 5 rather than 3, active low, and there is no powerdown pin at
+all since ov5675.c only ever requests "reset". The test is to make the probe
+fail on demand: held low the sensor does not identify, held high it does, and
+driving gpio 3 changes nothing either way, three trials each.
+
+The board data does generalise. On the second machine the DMI match, the
+_DEP clearing and both sensor i2c clients all behave as on the first, and
+the front camera streams. The one thing that is genuinely load-bearing is
+the choice of rails: with consumers on ANA/CORE/VSIO the sensor does not
+respond on i2c at all, and moving them to VSIO/AUX1/AUX2 fixes it with
+nothing else changed. Which of those three is avdd I still cannot determine
+- Charles found the sensor's i2c only answers when all three are enabled
+together - so v2 says that explicitly rather than implying it was measured.
+
+v2 of that patch is ready and does not depend on this discussion. It is
+generated against v7.2-rc7 with a base-commit trailer - v1 predated the
+MSI Prestige and Intel NVL entries landing in that file, so it no longer
+applied cleanly - and it has been tested standalone. With the ov5675 and
+ipu-bridge changes both reverted to their in-tree versions and no module
+parameters anywhere, the board data registers all seven rails at the
+expected voltages and nothing else on the machine changes; no sensor
+binds, which is the honest result for that patch by itself. With the
+other two applied on top, the reset lookup resolves on tps68470-gpio 5
+and the camera streams.
+
+Thanks for the pointer to the metadata branch - it saved me proposing bus
+codes that would not have worked for a 4x4 pattern.
+
+[3] https://github.com/intel/ipu6-camera-bins/blob/main/include/ipu6/
+    ia_imaging/ia_cmc_types.h
+
+--
+Sahan Nissanka

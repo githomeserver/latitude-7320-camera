@@ -1,143 +1,417 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * TI TPS68470 PMIC platform data for the Dell Latitude 7320 Detachable.
+ * TI TPS68470 PMIC platform data definition.
  *
- * This machine has two MIPI sensors behind an Intel IPU6, both powered by a
- * single TPS68470 (ACPI INT3472:07, \_SB.PC00.CLP0, _DDN "PMIC-CRDG"):
+ * Copyright (c) 2021 Dan Scally <djrscally@gmail.com>
+ * Copyright (c) 2021 Red Hat Inc.
  *
- *   OVTI5678:00  front / user-facing, 5MP, CSI-2 port 6, 2 lanes, i2c 0x36 on I2C1
- *   OVTI8856:00  rear  / world-facing, 8MP, CSI-2 port 1, 4 lanes, i2c 0x36 on I2C2
- *
- * MCLK for both is 19.2 MHz (ACPI NVS L0CK/L1CK = 0x0124F800), and both name
- * control logic id 0, which matches CLDB.control_logic_id.
- *
- * WHAT IS VERIFIED AND WHAT IS NOT
- *
- * Verified by reading this machine's ACPI NVS at runtime: the DMI strings, the
- * control logic instance (INT3472:07 -> "i2c-INT3472:07"), the sensor ACPI ids,
- * and everything in the table above.
- *
- * NOT verified: which TPS68470 GPIO drives reset/powerdown for each sensor, and
- * which rail feeds which sensor supply. CLDB carries C0W0=14 and C0W4=3 at
- * offsets 0x08/0x0c, but tps68470-gpio only has pins 0..9, so 14 cannot be a
- * pin number and the CLDB bytes cannot be read as a lookup table directly.
- * Both are therefore module parameters so they can be swept by unbind/rebind
- * rather than by rebuilding and rebooting. See the README.
+ * Red Hat authors:
+ * Hans de Goede <hdegoede@redhat.com>
  */
 
 #include <linux/dmi.h>
 #include <linux/gpio/machine.h>
-#include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/platform_data/tps68470.h>
+#include <linux/property.h>
 #include <linux/regulator/machine.h>
 #include "tps68470.h"
 
-#define OV5678_DEV_ID	"i2c-OVTI5678:00"
-#define OV8856_DEV_ID	"i2c-OVTI8856:00"
-
-/* -1 disables a lookup entirely; otherwise a tps68470-gpio pin, 0..9. */
-static int front_reset = 9;
-static int front_powerdown = 7;
-static int rear_reset = 3;
-static int rear_powerdown = 4;
-static int rail_map;
-
-module_param(front_reset, int, 0644);
-MODULE_PARM_DESC(front_reset, "tps68470-gpio pin for OVTI5678 reset, -1 to omit");
-module_param(front_powerdown, int, 0644);
-MODULE_PARM_DESC(front_powerdown, "tps68470-gpio pin for OVTI5678 powerdown, -1 to omit");
-module_param(rear_reset, int, 0644);
-MODULE_PARM_DESC(rear_reset, "tps68470-gpio pin for OVTI8856 reset, -1 to omit");
-module_param(rear_powerdown, int, 0644);
-MODULE_PARM_DESC(rear_powerdown, "tps68470-gpio pin for OVTI8856 powerdown, -1 to omit");
-module_param(rail_map, int, 0644);
-MODULE_PARM_DESC(rail_map,
-		 "0 = ANA/CORE/VSIO -> avdd/dvdd/dovdd (conventional), 1 = VSIO/AUX1/AUX2 -> avdd/dvdd/dovdd (Dell 7212 style)");
-
-/*
- * Rail map 0 - the conventional OmniVision supply set, at the voltages those
- * parts expect: AVDD 2.8V, DVDD 1.2V, DOVDD 1.8V.
- */
-static struct regulator_consumer_supply dell_7320_core_consumers[] = {
-	REGULATOR_SUPPLY("dvdd", OV5678_DEV_ID),
-	REGULATOR_SUPPLY("dvdd", OV8856_DEV_ID),
+static struct regulator_consumer_supply int347a_core_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dvdd", "i2c-INT347A:00"),
 };
 
-static struct regulator_consumer_supply dell_7320_ana_consumers[] = {
-	REGULATOR_SUPPLY("avdd", OV5678_DEV_ID),
-	REGULATOR_SUPPLY("avdd", OV8856_DEV_ID),
+static struct regulator_consumer_supply int347a_ana_consumer_supplies[] = {
+	REGULATOR_SUPPLY("avdd", "i2c-INT347A:00"),
 };
 
-static struct regulator_consumer_supply dell_7320_vsio_consumers[] = {
-	REGULATOR_SUPPLY("dovdd", OV5678_DEV_ID),
-	REGULATOR_SUPPLY("dovdd", OV8856_DEV_ID),
+static struct regulator_consumer_supply int347a_vcm_consumer_supplies[] = {
+	REGULATOR_SUPPLY("vdd", "i2c-INT347A:00-VCM"),
 };
 
-/* Only the rear module has a VCM (ACPI NVS L1VC=2; L0VC=0 for the front). */
-static struct regulator_consumer_supply dell_7320_vcm_consumers[] = {
-	REGULATOR_SUPPLY("vdd", OV8856_DEV_ID "-VCM"),
+static struct regulator_consumer_supply int347a_vsio_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dovdd", "i2c-INT347A:00"),
+	REGULATOR_SUPPLY("vsio", "i2c-INT347A:00-VCM"),
+	REGULATOR_SUPPLY("vddd", "i2c-INT347E:00"),
 };
 
-/*
- * Rail map 1 - the mapping upstream uses for the Dell 7212, where the sensor
- * supplies hang off VSIO/AUX1/AUX2 instead. Kept selectable because this board
- * is a different CRD revision and the wiring is not documented anywhere.
- */
-static struct regulator_consumer_supply dell_7320_alt_vsio_consumers[] = {
-	REGULATOR_SUPPLY("avdd", OV5678_DEV_ID),
-	REGULATOR_SUPPLY("avdd", OV8856_DEV_ID),
+static struct regulator_consumer_supply int347a_aux1_consumer_supplies[] = {
+	REGULATOR_SUPPLY("vdda", "i2c-INT347E:00"),
 };
 
-static struct regulator_consumer_supply dell_7320_alt_aux1_consumers[] = {
-	REGULATOR_SUPPLY("dvdd", OV5678_DEV_ID),
-	REGULATOR_SUPPLY("dvdd", OV8856_DEV_ID),
+static struct regulator_consumer_supply int347a_aux2_consumer_supplies[] = {
+	REGULATOR_SUPPLY("vdddo", "i2c-INT347E:00"),
 };
 
-static struct regulator_consumer_supply dell_7320_alt_aux2_consumers[] = {
-	REGULATOR_SUPPLY("dovdd", OV5678_DEV_ID),
-	REGULATOR_SUPPLY("dovdd", OV8856_DEV_ID),
+static const struct regulator_init_data surface_go_tps68470_core_reg_init_data = {
+	.constraints = {
+		.min_uV = 1200000,
+		.max_uV = 1200000,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int347a_core_consumer_supplies),
+	.consumer_supplies = int347a_core_consumer_supplies,
 };
 
-#define DELL_7320_REG(_name, _uV, _consumers)					\
-static const struct regulator_init_data _name = {				\
-	.constraints = {							\
-		.min_uV = (_uV),						\
-		.max_uV = (_uV),						\
-		.apply_uV = 1,							\
-		.valid_ops_mask = REGULATOR_CHANGE_STATUS,			\
-	},									\
-	.num_consumer_supplies = ARRAY_SIZE(_consumers),			\
-	.consumer_supplies = (_consumers),					\
-}
+static const struct regulator_init_data surface_go_tps68470_ana_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int347a_ana_consumer_supplies),
+	.consumer_supplies = int347a_ana_consumer_supplies,
+};
 
-#define DELL_7320_REG_UNUSED(_name, _uV)					\
-static const struct regulator_init_data _name = {				\
-	.constraints = {							\
-		.min_uV = (_uV),						\
-		.max_uV = (_uV),						\
-		.apply_uV = 1,							\
-		.valid_ops_mask = REGULATOR_CHANGE_STATUS,			\
-	},									\
-	.num_consumer_supplies = 0,						\
-	.consumer_supplies = NULL,						\
-}
+static const struct regulator_init_data surface_go_tps68470_vcm_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int347a_vcm_consumer_supplies),
+	.consumer_supplies = int347a_vcm_consumer_supplies,
+};
 
-DELL_7320_REG(dell_7320_core_reg, 1200000, dell_7320_core_consumers);
-DELL_7320_REG(dell_7320_ana_reg, 2815200, dell_7320_ana_consumers);
-DELL_7320_REG(dell_7320_vcm_reg, 2815200, dell_7320_vcm_consumers);
-DELL_7320_REG(dell_7320_vsio_reg, 1800600, dell_7320_vsio_consumers);
-DELL_7320_REG_UNUSED(dell_7320_aux1_reg, 1213200);
-DELL_7320_REG_UNUSED(dell_7320_aux2_reg, 1800600);
+/* Ensure the always-on VIO regulator has the same voltage as VSIO */
+static const struct regulator_init_data surface_go_tps68470_vio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = true,
+		.always_on = true,
+	},
+};
 
-DELL_7320_REG_UNUSED(dell_7320_alt_core_reg, 1200000);
-DELL_7320_REG_UNUSED(dell_7320_alt_ana_reg, 2815200);
-DELL_7320_REG(dell_7320_alt_vsio_reg, 1800600, dell_7320_alt_vsio_consumers);
-DELL_7320_REG(dell_7320_alt_aux1_reg, 1213200, dell_7320_alt_aux1_consumers);
-DELL_7320_REG(dell_7320_alt_aux2_reg, 1800600, dell_7320_alt_aux2_consumers);
+static const struct regulator_init_data surface_go_tps68470_vsio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int347a_vsio_consumer_supplies),
+	.consumer_supplies = int347a_vsio_consumer_supplies,
+};
 
-/* VIO is always-on and must track VSIO. */
-static const struct regulator_init_data dell_7320_vio_reg = {
+static const struct regulator_init_data surface_go_tps68470_aux1_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int347a_aux1_consumer_supplies),
+	.consumer_supplies = int347a_aux1_consumer_supplies,
+};
+
+static const struct regulator_init_data surface_go_tps68470_aux2_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int347a_aux2_consumer_supplies),
+	.consumer_supplies = int347a_aux2_consumer_supplies,
+};
+
+static const struct tps68470_regulator_platform_data surface_go_tps68470_pdata = {
+	.reg_init_data = {
+		[TPS68470_CORE] = &surface_go_tps68470_core_reg_init_data,
+		[TPS68470_ANA]  = &surface_go_tps68470_ana_reg_init_data,
+		[TPS68470_VCM]  = &surface_go_tps68470_vcm_reg_init_data,
+		[TPS68470_VIO] = &surface_go_tps68470_vio_reg_init_data,
+		[TPS68470_VSIO] = &surface_go_tps68470_vsio_reg_init_data,
+		[TPS68470_AUX1] = &surface_go_tps68470_aux1_reg_init_data,
+		[TPS68470_AUX2] = &surface_go_tps68470_aux2_reg_init_data,
+	},
+};
+
+/* Settings for Dell 7212 Tablet */
+
+static struct regulator_consumer_supply int3479_vsio_consumer_supplies[] = {
+	REGULATOR_SUPPLY("avdd", "i2c-INT3479:00"),
+};
+
+static struct regulator_consumer_supply int3479_aux1_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dvdd", "i2c-INT3479:00"),
+};
+
+static struct regulator_consumer_supply int3479_aux2_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dovdd", "i2c-INT3479:00"),
+};
+
+static const struct regulator_init_data dell_7212_tps68470_core_reg_init_data = {
+	.constraints = {
+		.min_uV = 1200000,
+		.max_uV = 1200000,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data dell_7212_tps68470_ana_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data dell_7212_tps68470_vcm_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data dell_7212_tps68470_vio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data dell_7212_tps68470_vsio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int3479_vsio_consumer_supplies),
+	.consumer_supplies = int3479_vsio_consumer_supplies,
+};
+
+static const struct regulator_init_data dell_7212_tps68470_aux1_reg_init_data = {
+	.constraints = {
+		.min_uV = 1213200,
+		.max_uV = 1213200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int3479_aux1_consumer_supplies),
+	.consumer_supplies = int3479_aux1_consumer_supplies,
+};
+
+static const struct regulator_init_data dell_7212_tps68470_aux2_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(int3479_aux2_consumer_supplies),
+	.consumer_supplies = int3479_aux2_consumer_supplies,
+};
+
+static const struct tps68470_regulator_platform_data dell_7212_tps68470_pdata = {
+	.reg_init_data = {
+		[TPS68470_CORE] = &dell_7212_tps68470_core_reg_init_data,
+		[TPS68470_ANA]  = &dell_7212_tps68470_ana_reg_init_data,
+		[TPS68470_VCM]  = &dell_7212_tps68470_vcm_reg_init_data,
+		[TPS68470_VIO]  = &dell_7212_tps68470_vio_reg_init_data,
+		[TPS68470_VSIO] = &dell_7212_tps68470_vsio_reg_init_data,
+		[TPS68470_AUX1] = &dell_7212_tps68470_aux1_reg_init_data,
+		[TPS68470_AUX2] = &dell_7212_tps68470_aux2_reg_init_data,
+	},
+};
+
+/* Settings for MSI Prestige 14 AI+ Evo C2VMG laptop. */
+static struct regulator_consumer_supply ovti5675_avdd_consumer_supplies[] = {
+	REGULATOR_SUPPLY("avdd", "i2c-OVTI5675:00"),
+};
+
+static struct regulator_consumer_supply ovti5675_dovdd_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dovdd", "i2c-OVTI5675:00"),
+};
+
+static struct regulator_consumer_supply ovti5675_dvdd_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dvdd", "i2c-OVTI5675:00"),
+};
+
+static const struct regulator_init_data msi_prestige_ai_evo_tps68470_core_reg_init_data = {
+	.constraints = {
+		.min_uV = 1200000,
+		.max_uV = 1200000,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti5675_dvdd_consumer_supplies),
+	.consumer_supplies = ovti5675_dvdd_consumer_supplies,
+};
+
+static const struct regulator_init_data msi_prestige_ai_evo_tps68470_ana_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti5675_avdd_consumer_supplies),
+	.consumer_supplies = ovti5675_avdd_consumer_supplies,
+};
+
+static const struct regulator_init_data msi_prestige_ai_evo_tps68470_vio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data msi_prestige_ai_evo_tps68470_vsio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti5675_dovdd_consumer_supplies),
+	.consumer_supplies = ovti5675_dovdd_consumer_supplies,
+};
+
+static const struct tps68470_regulator_platform_data msi_prestige_ai_evo_tps68470_pdata = {
+	.reg_init_data = {
+		[TPS68470_CORE] = &msi_prestige_ai_evo_tps68470_core_reg_init_data,
+		[TPS68470_ANA]  = &msi_prestige_ai_evo_tps68470_ana_reg_init_data,
+		[TPS68470_VIO]  = &msi_prestige_ai_evo_tps68470_vio_reg_init_data,
+		[TPS68470_VSIO] = &msi_prestige_ai_evo_tps68470_vsio_reg_init_data,
+	},
+};
+
+/* Settings for Intel NVL platform */
+
+static struct regulator_consumer_supply ovti13b1_core_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dvdd", "i2c-OVTI13B1:01"),
+};
+
+static struct regulator_consumer_supply ovti13b1_ana_consumer_supplies[] = {
+	REGULATOR_SUPPLY("avdd", "i2c-OVTI13B1:01"),
+};
+
+static struct regulator_consumer_supply ovti13b1_vcm_consumer_supplies[] = {
+	REGULATOR_SUPPLY("vcc", "i2c-OVTI13B1:01-VCM"),
+};
+
+static struct regulator_consumer_supply ovti13b1_vsio_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dovdd", "i2c-OVTI13B1:01"),
+};
+
+static const struct regulator_init_data intel_nvl_tps68470_core_reg_init_data = {
+		.constraints = {
+		.min_uV = 1200000,
+		.max_uV = 1200000,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti13b1_core_consumer_supplies),
+	.consumer_supplies = ovti13b1_core_consumer_supplies,
+};
+
+static const struct regulator_init_data intel_nvl_tps68470_ana_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti13b1_ana_consumer_supplies),
+	.consumer_supplies = ovti13b1_ana_consumer_supplies,
+};
+static const struct regulator_init_data intel_nvl_tps68470_vcm_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti13b1_vcm_consumer_supplies),
+	.consumer_supplies = ovti13b1_vcm_consumer_supplies,
+};
+
+/* Ensure the always-on VIO regulator has the same voltage as VSIO */
+static const struct regulator_init_data intel_nvl_tps68470_vio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = true,
+		.always_on = true,
+	},
+};
+static const struct regulator_init_data intel_nvl_tps68470_vsio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = true,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(ovti13b1_vsio_consumer_supplies),
+	.consumer_supplies = ovti13b1_vsio_consumer_supplies,
+};
+
+static const struct tps68470_regulator_platform_data intel_nvl_tps68470_pdata = {
+	.reg_init_data = {
+		[TPS68470_CORE] = &intel_nvl_tps68470_core_reg_init_data,
+		[TPS68470_ANA]  = &intel_nvl_tps68470_ana_reg_init_data,
+		[TPS68470_VCM]  = &intel_nvl_tps68470_vcm_reg_init_data,
+		[TPS68470_VIO] = &intel_nvl_tps68470_vio_reg_init_data,
+		[TPS68470_VSIO] = &intel_nvl_tps68470_vsio_reg_init_data,
+	},
+};
+
+/* Settings for Dell Latitude 7320 Detachable */
+
+static struct regulator_consumer_supply dell_7320_detachable_vsio_consumer_supplies[] = {
+	REGULATOR_SUPPLY("avdd", "i2c-OVTI5678:00"),
+};
+
+static struct regulator_consumer_supply dell_7320_detachable_aux1_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dvdd", "i2c-OVTI5678:00"),
+};
+
+static struct regulator_consumer_supply dell_7320_detachable_aux2_consumer_supplies[] = {
+	REGULATOR_SUPPLY("dovdd", "i2c-OVTI5678:00"),
+};
+
+static const struct regulator_init_data dell_7320_detachable_core_reg_init_data = {
+	.constraints = {
+		.min_uV = 1200000,
+		.max_uV = 1200000,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data dell_7320_detachable_ana_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static const struct regulator_init_data dell_7320_detachable_vcm_reg_init_data = {
+	.constraints = {
+		.min_uV = 2815200,
+		.max_uV = 2815200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+/* Ensure the always-on VIO regulator has the same voltage as VSIO */
+static const struct regulator_init_data dell_7320_detachable_vio_reg_init_data = {
 	.constraints = {
 		.min_uV = 1800600,
 		.max_uV = 1800600,
@@ -146,126 +420,249 @@ static const struct regulator_init_data dell_7320_vio_reg = {
 	},
 };
 
-static const struct tps68470_regulator_platform_data dell_7320_pdata = {
+static const struct regulator_init_data dell_7320_detachable_vsio_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(dell_7320_detachable_vsio_consumer_supplies),
+	.consumer_supplies = dell_7320_detachable_vsio_consumer_supplies,
+};
+
+static const struct regulator_init_data dell_7320_detachable_aux1_reg_init_data = {
+	.constraints = {
+		.min_uV = 1213200,
+		.max_uV = 1213200,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(dell_7320_detachable_aux1_consumer_supplies),
+	.consumer_supplies = dell_7320_detachable_aux1_consumer_supplies,
+};
+
+static const struct regulator_init_data dell_7320_detachable_aux2_reg_init_data = {
+	.constraints = {
+		.min_uV = 1800600,
+		.max_uV = 1800600,
+		.apply_uV = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(dell_7320_detachable_aux2_consumer_supplies),
+	.consumer_supplies = dell_7320_detachable_aux2_consumer_supplies,
+};
+
+static const struct tps68470_regulator_platform_data dell_7320_detachable_tps68470_pdata = {
 	.reg_init_data = {
-		[TPS68470_CORE] = &dell_7320_core_reg,
-		[TPS68470_ANA]  = &dell_7320_ana_reg,
-		[TPS68470_VCM]  = &dell_7320_vcm_reg,
-		[TPS68470_VIO]  = &dell_7320_vio_reg,
-		[TPS68470_VSIO] = &dell_7320_vsio_reg,
-		[TPS68470_AUX1] = &dell_7320_aux1_reg,
-		[TPS68470_AUX2] = &dell_7320_aux2_reg,
+		[TPS68470_CORE] = &dell_7320_detachable_core_reg_init_data,
+		[TPS68470_ANA]  = &dell_7320_detachable_ana_reg_init_data,
+		[TPS68470_VCM]  = &dell_7320_detachable_vcm_reg_init_data,
+		[TPS68470_VIO]  = &dell_7320_detachable_vio_reg_init_data,
+		[TPS68470_VSIO] = &dell_7320_detachable_vsio_reg_init_data,
+		[TPS68470_AUX1] = &dell_7320_detachable_aux1_reg_init_data,
+		[TPS68470_AUX2] = &dell_7320_detachable_aux2_reg_init_data,
 	},
 };
 
-static const struct tps68470_regulator_platform_data dell_7320_alt_pdata = {
-	.reg_init_data = {
-		[TPS68470_CORE] = &dell_7320_alt_core_reg,
-		[TPS68470_ANA]  = &dell_7320_alt_ana_reg,
-		[TPS68470_VCM]  = &dell_7320_vcm_reg,
-		[TPS68470_VIO]  = &dell_7320_vio_reg,
-		[TPS68470_VSIO] = &dell_7320_alt_vsio_reg,
-		[TPS68470_AUX1] = &dell_7320_alt_aux1_reg,
-		[TPS68470_AUX2] = &dell_7320_alt_aux2_reg,
-	},
-};
-
-/*
- * Two slots plus a terminator each. The pin numbers below are placeholders;
- * dell_7320_apply_gpio_params() rewrites them from the module parameters on
- * every lookup, which happens once per probe.
- */
-static struct gpiod_lookup_table dell_7320_ov5678_gpios = {
-	.dev_id = OV5678_DEV_ID,
+static struct gpiod_lookup_table surface_go_int347a_gpios = {
+	.dev_id = "i2c-INT347A:00",
 	.table = {
-		GPIO_LOOKUP("tps68470-gpio", 0, "reset", GPIO_ACTIVE_LOW),
-		GPIO_LOOKUP("tps68470-gpio", 0, "powerdown", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("tps68470-gpio", 9, "reset", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("tps68470-gpio", 7, "powerdown", GPIO_ACTIVE_LOW),
 		{ }
 	}
 };
 
-static struct gpiod_lookup_table dell_7320_ov8856_gpios = {
-	.dev_id = OV8856_DEV_ID,
+static struct gpiod_lookup_table surface_go_int347e_gpios = {
+	.dev_id = "i2c-INT347E:00",
 	.table = {
-		GPIO_LOOKUP("tps68470-gpio", 0, "reset", GPIO_ACTIVE_LOW),
-		GPIO_LOOKUP("tps68470-gpio", 0, "powerdown", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("tps68470-gpio", 5, "enable", GPIO_ACTIVE_HIGH),
 		{ }
 	}
 };
 
-static void dell_7320_fill_table(struct gpiod_lookup_table *table,
-				 int reset_pin, int powerdown_pin)
-{
-	struct gpiod_lookup entry;
-	unsigned int i = 0;
-
-	if (reset_pin >= 0) {
-		entry = (struct gpiod_lookup)
-			GPIO_LOOKUP("tps68470-gpio", reset_pin, "reset", GPIO_ACTIVE_LOW);
-		table->table[i++] = entry;
+static struct gpiod_lookup_table dell_7212_int3479_gpios = {
+	.dev_id = "i2c-INT3479:00",
+	.table = {
+		GPIO_LOOKUP("tps68470-gpio", 3, "reset", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("tps68470-gpio", 4, "powerdown", GPIO_ACTIVE_LOW),
+		{ }
 	}
+};
 
-	if (powerdown_pin >= 0) {
-		entry = (struct gpiod_lookup)
-			GPIO_LOOKUP("tps68470-gpio", powerdown_pin, "powerdown", GPIO_ACTIVE_LOW);
-		table->table[i++] = entry;
+static struct gpiod_lookup_table msi_prestige_ai_evo_ovti5675_gpios = {
+	.dev_id = "i2c-OVTI5675:00",
+	.table = {
+		GPIO_LOOKUP("tps68470-gpio", 9, "reset", GPIO_ACTIVE_LOW),
+		{ }
 	}
+};
 
-	memset(&table->table[i], 0, sizeof(table->table[i]));
-}
+static struct gpiod_lookup_table intel_nvl_tps68470_gpios = {
+	.dev_id = "i2c-OVTI13B1:01",
+	.table = {
+		GPIO_LOOKUP("tps68470-gpio", 9, "reset", GPIO_ACTIVE_LOW),
+		{ }
+	}
+};
 
-static void dell_7320_apply_gpio_params(void)
-{
-	dell_7320_fill_table(&dell_7320_ov5678_gpios, front_reset, front_powerdown);
-	dell_7320_fill_table(&dell_7320_ov8856_gpios, rear_reset, rear_powerdown);
-}
+static struct gpiod_lookup_table dell_7320_detachable_gpios = {
+	.dev_id = "i2c-OVTI5678:00",
+	.table = {
+		GPIO_LOOKUP("tps68470-gpio", 5, "reset", GPIO_ACTIVE_LOW),
+		{ }
+	}
+};
 
-static struct int3472_tps68470_board_data dell_7320_board_data = {
-	/*
-	 * The live control logic on this machine is CLP0, which enumerates as
-	 * INT3472:07 - not :05 as on the Dell 7212. A mismatch here produces no
-	 * error message, just the -ENODEV this entry exists to fix.
-	 */
-	.dev_name = "i2c-INT3472:07",
-	.tps68470_regulator_pdata = &dell_7320_pdata,
+static const struct property_entry int3472_tps68470_daisy_chain_gpio_props[] = {
+	PROPERTY_ENTRY_BOOL("daisy-chain-enable"),
+	{ }
+};
+
+static const struct software_node int3472_tps68470_daisy_chain_gpio_swnode = {
+	.properties = int3472_tps68470_daisy_chain_gpio_props,
+};
+
+static const struct int3472_tps68470_board_data surface_go_tps68470_board_data = {
+	.dev_name = "i2c-INT3472:05",
+	.tps68470_regulator_pdata = &surface_go_tps68470_pdata,
 	.n_gpiod_lookups = 2,
 	.tps68470_gpio_lookup_tables = {
-		&dell_7320_ov5678_gpios,
-		&dell_7320_ov8856_gpios,
+		&surface_go_int347a_gpios,
+		&surface_go_int347e_gpios,
+	},
+};
+
+static const struct int3472_tps68470_board_data surface_go3_tps68470_board_data = {
+	.dev_name = "i2c-INT3472:01",
+	.tps68470_regulator_pdata = &surface_go_tps68470_pdata,
+	.n_gpiod_lookups = 2,
+	.tps68470_gpio_lookup_tables = {
+		&surface_go_int347a_gpios,
+		&surface_go_int347e_gpios,
+	},
+};
+
+static const struct int3472_tps68470_board_data dell_7212_tps68470_board_data = {
+	.dev_name = "i2c-INT3472:05",
+	.tps68470_regulator_pdata = &dell_7212_tps68470_pdata,
+	.n_gpiod_lookups = 1,
+	.tps68470_gpio_lookup_tables = {
+		&dell_7212_int3479_gpios,
+	},
+};
+
+static const struct int3472_tps68470_board_data msi_prestige_ai_evo_tps68470_board_data = {
+	.dev_name = "i2c-INT3472:06",
+	.tps68470_regulator_pdata = &msi_prestige_ai_evo_tps68470_pdata,
+	.tps68470_gpio_swnode = &int3472_tps68470_daisy_chain_gpio_swnode,
+	.n_gpiod_lookups = 1,
+	.tps68470_gpio_lookup_tables = {
+		&msi_prestige_ai_evo_ovti5675_gpios,
+	},
+};
+
+static const struct int3472_tps68470_board_data intel_nvl_tps68470_board_data = {
+	.dev_name = "i2c-INT3472:04",
+	.tps68470_regulator_pdata = &intel_nvl_tps68470_pdata,
+	.tps68470_gpio_swnode = &int3472_tps68470_daisy_chain_gpio_swnode,
+	.n_gpiod_lookups = 1,
+	.tps68470_gpio_lookup_tables = {
+		&intel_nvl_tps68470_gpios,
+	},
+};
+
+static const struct int3472_tps68470_board_data dell_7320_detachable_tps68470_board_data = {
+	.dev_name = "i2c-INT3472:07",
+	.tps68470_regulator_pdata = &dell_7320_detachable_tps68470_pdata,
+	.n_gpiod_lookups = 1,
+	.tps68470_gpio_lookup_tables = {
+		&dell_7320_detachable_gpios,
 	},
 };
 
 static const struct dmi_system_id int3472_tps68470_board_data_table[] = {
 	{
 		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Surface Go"),
+		},
+		.driver_data = (void *)&surface_go_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Surface Go 2"),
+		},
+		.driver_data = (void *)&surface_go_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Surface Go 3"),
+		},
+		.driver_data = (void *)&surface_go3_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Latitude 7212 Rugged Extreme Tablet"),
+		},
+		.driver_data = (void *)&dell_7212_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Prestige 13 AI+ Evo A2VMG"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "MS-13Q3"),
+		},
+		.driver_data = (void *)&msi_prestige_ai_evo_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Prestige 14 AI+ Evo C2VMG"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "MS-14N3"),
+		},
+		.driver_data = (void *)&msi_prestige_ai_evo_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Prestige 16 AI+ Evo B2VMG"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "MS-15A3"),
+		},
+		.driver_data = (void *)&msi_prestige_ai_evo_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Nova Lake Client Platform"),
+		},
+		.driver_data = (void *)&intel_nvl_tps68470_board_data,
+	},
+	{
+		.matches = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Latitude 7320 Detachable"),
 		},
-		.driver_data = (void *)&dell_7320_board_data,
+		.driver_data = (void *)&dell_7320_detachable_tps68470_board_data,
 	},
 	{ }
 };
 
 const struct int3472_tps68470_board_data *int3472_tps68470_get_board_data(const char *dev_name)
 {
-	struct int3472_tps68470_board_data *board_data;
+	const struct int3472_tps68470_board_data *board_data;
 	const struct dmi_system_id *match;
 
 	for (match = dmi_first_match(int3472_tps68470_board_data_table);
 	     match;
 	     match = dmi_first_match(match + 1)) {
 		board_data = match->driver_data;
-		if (strcmp(board_data->dev_name, dev_name) == 0) {
-			/*
-			 * Re-read the tunables here rather than at module init,
-			 * so a new mapping can be tried with an unbind/rebind
-			 * instead of a rebuild and reboot.
-			 */
-			dell_7320_apply_gpio_params();
-			board_data->tps68470_regulator_pdata =
-				rail_map ? &dell_7320_alt_pdata : &dell_7320_pdata;
+		if (strcmp(board_data->dev_name, dev_name) == 0)
 			return board_data;
-		}
 	}
 
 	return NULL;

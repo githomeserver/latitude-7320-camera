@@ -2,7 +2,6 @@
 /* Author: Dan Scally <djrscally@gmail.com> */
 
 #include <linux/acpi.h>
-#include <linux/device.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
 #include <linux/mfd/core.h>
@@ -198,24 +197,11 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 		cells[1].platform_data = (void *)board_data->tps68470_regulator_pdata;
 		cells[1].pdata_size = sizeof(struct tps68470_regulator_platform_data);
 		cells[2].name = "tps68470-gpio";
+		cells[2].swnode = board_data->tps68470_gpio_swnode;
 
 		for (i = 0; i < board_data->n_gpiod_lookups; i++)
 			gpiod_add_lookup_table(board_data->tps68470_gpio_lookup_tables[i]);
 
-		/*
-		 * Kept identical to upstream on purpose.
-		 *
-		 * On one manual insmod-after-boot the regulator cell failed with
-		 * "-ENOENT: getting tps68470-clk" while the clk cell was bound,
-		 * and hand-binding the regulator afterwards worked. Splitting
-		 * this into two calls with wait_for_device_probe() in between
-		 * would be the obvious fix, but wait_for_device_probe() does
-		 * flush_work(&deferred_probe_work), which deadlocks if this
-		 * probe is itself running on that workqueue - a real
-		 * possibility at boot. Not worth risking a boot hang for a
-		 * symptom only ever seen on a hand-loaded module, so measure it
-		 * at boot first.
-		 */
 		ret = devm_mfd_add_devices(&client->dev, PLATFORM_DEVID_NONE,
 					   cells, TPS68470_WIN_MFD_CELL_COUNT,
 					   NULL, 0, NULL);

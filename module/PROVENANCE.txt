@@ -1,0 +1,17 @@
+These sources are NOT hand-edited. They are the output of applying the v2 patch
+to a pristine v7.2-rc7 tree with git am, which is what a maintainer does.
+
+  base            v7.2-rc7 = db2ddb87143519e20a95aa36c60b36107b736a58
+  patch           v2-0001-platform-x86-int3472-Add-TPS68470-board-data-for-.patch
+  patch sha256    8cccad48ad697ae871eec39c0d56e97532430f9fdc2ce921b312828c5a4379ad
+  git am          exit 0, no fuzz, no manual hunks
+  generated       2026-08-16T15:29:03+10:00
+
+sha1 of each file AFTER git am:
+  $f                       $(sha1sum $f | cut -d' ' -f1)
+  $f                       $(sha1sum $f | cut -d' ' -f1)
+  $f                       $(sha1sum $f | cut -d' ' -f1)
+
+An earlier run built this module by slicing the added block out of a git branch
+with a script. That tested the CODE but not the PATCH. This directory tests the
+patch itself: if git am ever stops applying, the build here stops too.

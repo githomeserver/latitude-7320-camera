@@ -11,6 +11,37 @@ and [#402](https://github.com/intel/ipu6-drivers/issues/402) (2025), the latter
 blocked waiting for "OV5678 sensor specifications (clock rates, power
 requirements)".
 
+## Before you start
+
+**Check this is actually your machine.** The board data matches on DMI strings, so
+it does nothing at all on anything else:
+
+```sh
+cat /sys/class/dmi/id/product_name        # must print: Latitude 7320 Detachable
+```
+
+Note "Detachable". There is also a **Dell Latitude 7320 laptop**, a different
+machine with no IPU6, and none of this applies to it.
+
+**What you get:** `/dev/video0` at 1280x720, roughly 28 fps, usable in Firefox,
+Chromium and anything else that opens a normal camera device. Colour is
+reasonable, not excellent - see [Known limitations](#known-limitations).
+
+**What it touches.** Out-of-tree kernel modules via DKMS, so they rebuild when
+your kernel updates. A libcamera build in `/usr/local` - **nothing under `/usr` is
+modified**, and your distribution's libcamera is left alone. Three systemd units.
+Two files in `/etc/modprobe.d`. All of it is listed in
+[Uninstalling](#uninstalling), and all of it is reversible.
+
+**Budget an hour, and expect two reboots.** Most of that is libcamera compiling.
+
+**If you have never done this before**, the two things worth knowing: DKMS builds
+kernel modules against your running kernel and rebuilds them automatically on
+kernel upgrades, and `dracut`/`update-initramfs` regenerate the early-boot image -
+needed here because of a firmware loading race. You do not need to understand the
+camera stack to follow [Installing](#installing); you do need to run the steps in
+order, because each one depends on the last.
+
 ## The short version
 
 **`ov5675.c` drives it — but the sensor is RGB-IR, and no Linux driver can
@@ -338,6 +369,10 @@ the pipeline to 1.3 fps against 29.9 for the same work.
 
 ```sh
 # 1. kernel modules via DKMS: int3472 board data, ov5675 ACPI id, ipu-bridge entry
+#    module/ is the git-am output of the submitted v2 patch, so what you run here
+#    is byte-for-byte what went upstream. It takes NO module parameters; if an
+#    older install left /etc/modprobe.d/int3472-dell7320.conf behind, remove it or
+#    the module will refuse to load with "unknown parameter".
 sudo tools/dkms-install.sh
 sudo dracut --force --kver "$(uname -r)"      # also fixes the IPU6 firmware race
 sudo reboot
