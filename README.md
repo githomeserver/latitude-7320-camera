@@ -122,10 +122,16 @@ sudo tools/install-camera-service.sh
 gst-launch-1.0 v4l2src device=/dev/video0 ! videoconvert ! autovideosink
 ```
 
-You should see a live picture, yellow-cast and blocky. **That means everything
-worked.** The cast is the 4x4 RGB-IR mosaic being read as ordinary Bayer: the
-channel labelled blue is actually infrared, which is dark, so the image goes
-yellow.
+You should see a live picture, heavily yellow-cast. **That means everything
+worked** - this is what the camera looks like before any of the colour work:
+
+![Quick start result: a colour chart rendered olive-yellow](docs/images/01-quickstart.jpg)
+
+That is a standard colour chart on screen. Every patch is dragged toward
+yellow-brown and the blue and purple ones are unrecognisable, because the 4x4
+RGB-IR mosaic is being read as ordinary Bayer: **the channel labelled blue is
+actually infrared**, which is dark. On the white patch it reads **18** where it
+should read about 180.
 
 **To fix the colour**, continue with [Installing](#installing) from step 3 - it
 builds a patched libcamera into `/usr/local` and adds the RGB-IR conversion, lens
@@ -496,6 +502,39 @@ sudo SHARPNESS=0.5 DENOISE=0.15 IRSUB=2.0 tools/install-camera-service.sh
 # optional: hide the 64 dead ipu6 entries from the browser's camera list
 sudo tools/hide-raw-ipu6-nodes.sh
 ```
+
+### What each step buys you
+
+Same chart, same screen brightness, same output size, captured one after
+another without moving anything. Only the pipeline changes between them.
+
+**After step 3** - the RGB-IR pre-pass. The yellow cast is gone and greys are
+neutral. Blue on the white patch goes **18 -> 180**. Colours are still flat.
+
+![After the RGB-IR pre-pass](docs/images/02-prepass.jpg)
+
+**After step 4** - the colour matrix. Subtle but real: greens and magentas
+separate, mean saturation across the six primary patches goes 29.5% -> 34.7%.
+
+![After the colour matrix](docs/images/03-ccm.jpg)
+
+**After step 5** - lens shading. The whole frame lifts and the corners stop
+falling away; the white patch goes 163 -> 234. Compare the bottom-left corner
+with the picture above.
+
+![After lens shading](docs/images/04-shading.jpg)
+
+**After step 6** there is no picture, deliberately. Denoise and green detail act
+at the pixel scale, and a colour chart is 24 large flat rectangles with no fine
+detail to recover - the frames are indistinguishable. Measured instead: **2.0x
+less temporal noise** at `DENOISE=0.25`, and **1.49x the vertical detail for
+1.43x the noise** at `SHARPNESS=1.0`. Showing two identical pictures and calling
+it an improvement would be worse than showing none.
+
+The first picture is framed a little wider than the rest. That is not a mistake:
+without the pre-pass libcamera debayers at full resolution and scales down, while
+with it a 1280x720 window is cropped from the half-size output, so the fields of
+view genuinely differ.
 
 Step 1 fixes the red/blue transposition and makes the sensor bind at all; step 3
 fixes the libcamera defects; steps 4-6 are colour and noise. Any one alone still
