@@ -497,7 +497,7 @@ sudo tools/install-ccm.sh 1.8101,-0.3453,-0.4648,0.3076,0.4034,0.2890,-0.1110,-0
 sudo tools/measure-lens-shading.sh --raw     # writes data/lens-shading-measured-raw.bin
 
 # 6. the camera service, which also feeds /dev/video0 for browsers
-sudo SHARPNESS=0.5 DENOISE=0.15 IRSUB=2.0 tools/install-camera-service.sh
+sudo SHARPNESS=0.5 IRSUB=2.0 tools/install-camera-service.sh
 
 # optional: hide the 64 dead ipu6 entries from the browser's camera list
 sudo tools/hide-raw-ipu6-nodes.sh
@@ -558,7 +558,7 @@ corners to within 0.4% on held-out frames.
 | variable | default | what it does |
 |---|---|---|
 | `SHARPNESS` | `0.0` | 0-1. Green detail vs noise in the mosaic conversion. 0 averages all 8 greens in the 4x4 cell into one value; 1 gives each output green its own quadrant. **A trade, not a win** - 1.0 measured 1.49x the detail and 1.43x the noise, leaving detail-to-noise flat. |
-| `DENOISE` | `0.25` | Weight given to the **current** frame in still areas, so **lower denoises harder**; `1.0` disables. 0.25 gives 2.0x less temporal noise, 0.15 gives 2.4x with more smearing after a scene cut. |
+| `DENOISE` | `0.35` | Weight given to the **current** frame in still areas, so **lower denoises harder**; `1.0` disables. 0.25 gives 2.0x less temporal noise and 0.10 gives 3.8x, but lower values also **ghost** - at 0.15 a moving object leaves a visible double image. 0.35 keeps most of the noise reduction with no trailing you can see. Raise it if you still notice smearing when you move. |
 | `DENOISE_THR` | `40` | Raw counts of change before a region counts as moving. The noise floor is estimated per frame and subtracted first, so this does not need retuning when the light changes. |
 | `IRSUB` | `1.0` | How much of the IR plane to subtract from R, G and B. Higher saturates more; above ~3.0 the shadows go magenta as green clamps at zero. **2.0 is the usable limit.** |
 | `SHADING` | measured map | Path to a per-channel gain map, or empty to disable. |

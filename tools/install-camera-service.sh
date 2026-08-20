@@ -48,11 +48,13 @@ SHARPNESS="${SHARPNESS:-0.0}"
 # Temporal denoise. DENOISE is the blend weight given to the current frame in
 # still areas: lower denoises harder, 1.0 disables. This sensor is noise
 # limited, so this is the single biggest image-quality lever available -
-# measured 2.0x less temporal noise at 0.25, up to 3.8x at 0.10, against a
-# residual of about 3 counts 100 ms after a scene cut. Motion is detected per
+# measured 2.0x less temporal noise at 0.25, up to 3.8x at 0.10. Lower values
+# also ghost more: at 0.15 a moving object leaves a visible double image. 0.35
+# is the default because it keeps most of the noise reduction with markedly
+# less trailing - raise it further if you see smearing when you move. Motion is detected per
 # block with the frame's own noise floor subtracted, so still areas are
 # averaged hard while moving ones pass through.
-DENOISE="${DENOISE:-0.25}"
+DENOISE="${DENOISE:-0.35}"
 DENOISE_THR="${DENOISE_THR:-40}"
 
 # Lens shading. Path to a per-channel gain map, or empty to disable. The map

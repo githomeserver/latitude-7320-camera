@@ -56,6 +56,22 @@ public:
 	 */
 	void configure(float alpha, uint16_t threshold);
 
+	/**
+	 * \brief Tell the filter the frame geometry
+	 *
+	 * Without this, motion is decided over runs of consecutive samples, which
+	 * at this width is a horizontal STRIP about a fifth of a row wide, not a
+	 * compact region. A moving edge then updates some strips and not others
+	 * and leaves horizontal seams across it - the artefact reads as
+	 * interlacing combing. With the geometry known the same decision is made
+	 * over square tiles instead.
+	 */
+	void setGeometry(unsigned int width, unsigned int height)
+	{
+		width_ = width;
+		height_ = height;
+	}
+
 	/** \brief Denoise \a frame of \a count samples in place */
 	void apply(uint16_t *frame, size_t count);
 
@@ -66,8 +82,11 @@ public:
 	float lastMotionFraction() const { return motionFraction_; }
 
 private:
-	static constexpr unsigned int kBlock = 256;
+	static constexpr unsigned int kBlock = 256;   /* fallback when geometry is unknown */
+	static constexpr unsigned int kTile = 32;     /* square tile side, in samples */
 
+	unsigned int width_ = 0;
+	unsigned int height_ = 0;
 	std::vector<uint16_t> history_;
 	std::vector<uint16_t> blockMotion_;
 	std::vector<uint16_t> scratch_;
