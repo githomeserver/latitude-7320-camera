@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <vector>
+
 namespace libcamera {
 
 /**
@@ -181,6 +183,9 @@ private:
 	uint8_t positions_[4][8];
 	uint8_t counts_[4];
 	float sharpness_ = 1.0f;
+	unsigned int chromaBlur_ = 0;
+	mutable std::vector<uint16_t> chromaR_;
+	mutable std::vector<uint16_t> chromaB_;
 	unsigned int activeY0_ = 0;
 	unsigned int activeY1_ = 0;
 	uint16_t blackLevel_;
@@ -233,6 +238,23 @@ public:
 	 * Rows outside the band are left untouched, so the caller must not read
 	 * them. Pass y1 <= y0 to disable and convert everything.
 	 */
+	/**
+	 * \brief Smooth red and blue across neighbouring cells
+	 * \param[in] radius 0 disables, 1 is a 3x3 cell average, 2 is 5x5
+	 *
+	 * Chroma is where the noise actually is. Measured on a flat patch of the
+	 * finished pipeline: luma sd 5.64, Cb 5.56, but **Cr 10.03** - red-
+	 * difference noise is nearly double the luma. Red sits at only 2 of the
+	 * 16 mosaic positions, an eighth the density of green, and the colour
+	 * matrix then amplifies that row 1.90x.
+	 *
+	 * Smoothing it is unusually cheap here because red and blue are ALREADY
+	 * per-cell - one value per 4x4 block of sensor pixels. Averaging across
+	 * neighbouring cells blurs something that was never sharp, while green,
+	 * which carries the detail the eye reads as sharpness, is untouched.
+	 */
+	void setChromaBlur(unsigned int radius) { chromaBlur_ = radius; }
+
 	void setActiveRows(unsigned int y0, unsigned int y1)
 	{
 		activeY0_ = y0;

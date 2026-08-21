@@ -57,6 +57,11 @@ SHARPNESS="${SHARPNESS:-0.0}"
 DENOISE="${DENOISE:-0.35}"
 DENOISE_THR="${DENOISE_THR:-40}"
 
+# Chroma blur radius in cells: 0 off, 1 a 3x3 average, 2 a 5x5. Red and blue are
+# already one value per 4x4 sensor block, so smoothing them costs almost nothing
+# visible while halving the noise that dominates the picture. Green is untouched.
+CHROMA_BLUR="${CHROMA_BLUR:-1}"
+
 # Lens shading. Path to a per-channel gain map, or empty to disable. The map
 # must be measured from RAW mosaic frames over the FULL 4:3 sensor field, which
 # is what the pre-pass sees - see tools/measure-lens-shading.sh --raw. A map
@@ -156,6 +161,7 @@ Environment=RGBIR_IRSUB=$IRSUB
 Environment=RGBIR_SHARPNESS=$SHARPNESS
 Environment=RGBIR_DENOISE=$DENOISE
 Environment=RGBIR_DENOISE_THR=$DENOISE_THR
+Environment=RGBIR_CHROMA_BLUR=$CHROMA_BLUR
 Environment="RGBIR_SHADING=$SHADING"
 Environment=LIBCAMERA_SOFTISP_MODE=cpu
 ExecStart=/usr/bin/gst-launch-1.0 -q libcamerasrc exposure-value=$EV ! video/x-raw,width=$WIDTH,height=$HEIGHT ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK

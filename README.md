@@ -561,6 +561,7 @@ corners to within 0.4% on held-out frames.
 | `DENOISE` | `0.35` | Weight given to the **current** frame in still areas, so **lower denoises harder**; `1.0` disables. 0.25 gives 2.0x less temporal noise and 0.10 gives 3.8x, but lower values also **ghost** - at 0.15 a moving object leaves a visible double image. 0.35 keeps most of the noise reduction with no trailing you can see. Raise it if you still notice smearing when you move. |
 | `DENOISE_THR` | `40` | Raw counts of change before a region counts as moving. The noise floor is estimated per frame and subtracted first, so this does not need retuning when the light changes. |
 | `IRSUB` | `1.0` | How much of the IR plane to subtract from R, G and B. Higher saturates more; above ~3.0 the shadows go magenta as green clamps at zero. **2.0 is the usable limit.** |
+| `CHROMA_BLUR` | `1` | Smooth red and blue across neighbouring cells: 0 off, 1 a 3x3 average, 2 a 5x5. Chroma is where the visible noise is - red occupies only 2 of the 16 mosaic positions and the colour matrix amplifies that row 1.90x. Measured in the Bayer plane, radius 1 takes red noise sd **13.22 -> 7.06** and blue **11.63 -> 5.08**, with **green unchanged at 13.45** - so the detail the eye reads as sharpness is untouched. 2 is smoother but starts to look soft. |
 | `SHADING` | measured map | Path to a per-channel gain map, or empty to disable. |
 | `EV` | `0` | Exposure compensation in stops. Ignored once the AGC is at its limit. |
 | `ASPECT` | `16:9` | `16:9` crops; `4:3` keeps the full field of view. |
