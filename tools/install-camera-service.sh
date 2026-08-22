@@ -37,6 +37,23 @@ LOOPBACK=/dev/video0
 # results and looked like the feature doing nothing.
 IRSUB="${IRSUB:-1.0}"
 
+# Let the IR coefficient follow how much of the IR channel is real signal.
+#
+# IR is the weakest channel on this sensor and so the first to run out of
+# photons. In a dark room its cells carry a few counts of signal under a
+# comparable amount of noise, and subtracting 2x of that from R, G and B is
+# subtracting noise rather than infrared - the largest single source of grain
+# measured on this hardware in low light.
+#
+# Each cell's coefficient is shrunk by k = IRSUB * SNR^2 / (1 + SNR^2), the
+# least-squares answer, so it is full strength where IR is clean and falls away
+# where IR is noise. Per cell, not per frame: a frame holding both a lamp and a
+# dim wall has a mean IR dominated by the lamp. Measured on a starved frame,
+# 1.13x less grain with the R/G and B/G ratios unmoved (0.9162 -> 0.9176).
+#
+# Set to 0 for the old fixed-coefficient behaviour.
+IRSUB_ADAPT="${IRSUB_ADAPT:-1}"
+
 # Green resolution vs noise, 0.0 to 1.0. 0.0 is the long-standing behaviour and
 # is bit-for-bit identical to it (verified over a full frame). 1.0 gives each
 # output green its own 2x2 quadrant of the 4x4 cell instead of one cell average
@@ -158,6 +175,7 @@ Environment=GST_PLUGIN_PATH=/usr/local/lib/x86_64-linux-gnu/gstreamer-1.0
 # with colour ones and destroys the 4x4 mosaic before it can be read.
 Environment=LIBCAMERA_RGBIR=1
 Environment=RGBIR_IRSUB=$IRSUB
+Environment=RGBIR_IRSUB_ADAPT=$IRSUB_ADAPT
 Environment=RGBIR_SHARPNESS=$SHARPNESS
 Environment=RGBIR_DENOISE=$DENOISE
 Environment=RGBIR_DENOISE_THR=$DENOISE_THR

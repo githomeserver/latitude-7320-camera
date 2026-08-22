@@ -8,6 +8,7 @@
 #include "rgbir_to_bayer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <errno.h>
 #include <string.h>
 
@@ -20,6 +21,8 @@ RgbIrToBayer::RgbIrToBayer(const Channel pattern[16], uint16_t blackLevel,
 {
 	memset(counts_, 0, sizeof(counts_));
 	memset(positions_, 0, sizeof(positions_));
+
+	irSubTable_.resize((size_t)maxValue_ + 1, 0);
 
 	for (uint8_t i = 0; i < 16; i++) {
 		Channel c = pattern[i];
@@ -62,72 +65,162 @@ inline uint32_t sampleGain(const uint16_t *map, unsigned int mw, unsigned int mh
 
 } /* namespace */
 
-void RgbIrToBayer::cellValues(const uint8_t *lines[4], unsigned int cx,
-			      unsigned int cols, unsigned int cy,
-			      unsigned int rows, const ShadingMap *shading,
-			      uint16_t &G, uint16_t &R, uint16_t &B) const
+/*
+ * Per-frame IR statistics, gathered on a 1-in-16 lattice of cells during the
+ * conversion that is already reading them, and consumed by the next frame.
+ *
+ * Noise is estimated from the difference between the two IR samples sharing a
+ * row of a cell. They sit two pixels apart, so they see very nearly the same
+ * scene and differ only by noise except across an edge. The MEDIAN of those
+ * differences is taken, not the mean: an edge or a texture inflates a mean
+ * without bound, while moving a median takes more than half the sampled cells.
+ * For X and Y independent and normal with the same sigma, median|X - Y| is
+ * 0.954 * sigma, hence the reciprocal applied below.
+ */
+int32_t RgbIrToBayer::irRolloff(int32_t d, int32_t cellMax) const
 {
-	int32_t cell[16];
-	for (unsigned int dy = 0; dy < 4; dy++) {
-		const uint8_t *p = lines[dy] + (cx * 4) * 2;
-		for (unsigned int dx = 0; dx < 4; dx++) {
-			int32_t v = p[0] | (p[1] << 8);
-			cell[dy * 4 + dx] = v - blackLevel_;
-			p += 2;
+	const int32_t full = (int32_t)maxValue_ - (int32_t)blackLevel_;
+	/*
+	 * 85% of full scale. Sensor response is already bending by then, so the
+	 * IR-to-colour ratio the subtraction relies on is no longer the ratio
+	 * that was calibrated. Below the knee nothing changes at all.
+	 */
+	const int32_t knee = full * 85 / 100;
+
+	if (cellMax <= knee)
+		return d;
+	if (cellMax >= full || knee >= full)
+		return 0;
+	return (int32_t)((int64_t)d * (full - cellMax) / (full - knee));
+}
+
+void RgbIrToBayer::irStatsReset() const
+{
+	memset(irDiffHist_, 0, sizeof(irDiffHist_));
+	irSum_ = 0;
+	irSamples_ = 0;
+	irDiffCount_ = 0;
+}
+
+void RgbIrToBayer::irStatsAccumulate(const int32_t cell[16]) const
+{
+	const uint8_t n = counts_[Infrared];
+	if (n < 2)
+		return;
+
+	/*
+	 * Skip clipped cells outright. A saturated IR sample reports neither
+	 * its level nor its noise - both are whatever the clamp left behind -
+	 * and including them would drag the median toward zero and the mean
+	 * toward full scale, pushing k up exactly where it should not be.
+	 */
+	const int32_t clip = (int32_t)maxValue_ - (int32_t)blackLevel_;
+	for (uint8_t k = 0; k < n; k++)
+		if (cell[positions_[Infrared][k]] >= clip)
+			return;
+
+	/*
+	 * Signed, and negatives are kept. Once IR is down to a few counts a
+	 * large share of samples fall below black, and dropping them turns the
+	 * mean into E[max(X, 0)] - which for the measured dark-room case of 3
+	 * counts under 5.2 reads 3.9 instead of 3.0 and holds k up at 0.72
+	 * where the algebra calls for 0.50. Precisely the regime this exists
+	 * for, so the bias has to go rather than be tolerated.
+	 */
+	for (uint8_t k = 0; k < n; k++)
+		irSum_ += cell[positions_[Infrared][k]];
+	irSamples_ += n;
+
+	/*
+	 * Pair k with k+1. positions_ is filled in raster order, so an even k
+	 * is the left IR sample of a cell row and k+1 its right neighbour.
+	 */
+	for (uint8_t k = 0; k + 1 < n; k += 2) {
+		int32_t d = cell[positions_[Infrared][k]] -
+			    cell[positions_[Infrared][k + 1]];
+		if (d < 0)
+			d = -d;
+		irDiffHist_[d < (int32_t)kIrHistBins ? d : kIrHistBins - 1]++;
+		irDiffCount_++;
+	}
+}
+
+void RgbIrToBayer::irBuildTable() const
+{
+	if (irSubTable_.empty())
+		return;
+
+	/*
+	 * Without a noise estimate - the first frame, or adaptive disabled -
+	 * the table is just the tuned coefficient applied straight.
+	 */
+	const float s2 = irAdaptive_ ? irSigmaCell_ * irSigmaCell_ : 0.0f;
+	for (size_t ir = 0; ir < irSubTable_.size(); ir++) {
+		const float i = (float)ir;
+		const float shrink = s2 > 0.0f ? (i * i) / (i * i + s2) : 1.0f;
+		irSubTable_[ir] = (int32_t)(irSubtract_ * shrink * i);
+	}
+}
+
+void RgbIrToBayer::irStatsFinish() const
+{
+	if (!irAdaptive_) {
+		if (irEffective_ != irSubtract_ || irSigmaCell_ != 0.0f) {
+			irEffective_ = irSubtract_;
+			irSigmaCell_ = 0.0f;
+			irBuildTable();
+		}
+		return;
+	}
+
+	/* No usable statistics: hold, rather than swing to an extreme. */
+	if (!irSamples_ || !irDiffCount_)
+		return;
+
+	uint32_t run = 0, med = 0;
+	const uint32_t target = irDiffCount_ / 2;
+	for (unsigned int i = 0; i < kIrHistBins; i++) {
+		run += irDiffHist_[i];
+		if (run > target) {
+			med = i;
+			break;
 		}
 	}
 
-	int32_t sum[4] = { 0, 0, 0, 0 };
-	for (uint8_t c = 0; c < 4; c++)
-		for (uint8_t k = 0; k < counts_[c]; k++)
-			sum[c] += cell[positions_[c][k]];
-
-	int32_t g = counts_[Green] ? sum[Green] / counts_[Green] : 0;
-	int32_t r = counts_[Red] ? sum[Red] / counts_[Red] : 0;
-	int32_t b = counts_[Blue] ? sum[Blue] / counts_[Blue] : 0;
+	/*
+	 * A median of zero means the IR plane is quantised flat - the scene is
+	 * black, or every sampled cell clipped. The SNR is meaningless either
+	 * way, so hold.
+	 */
+	if (!med)
+		return;
 
 	/*
-	 * Optional infrared subtraction. Every colour photosite responds to
-	 * near-infrared as well, so each colour channel carries an IR pedestal
-	 * that washes the image out. Removing k times the cell's IR average
-	 * restores saturation, at the cost of adding IR's noise to all three.
-	 * Values are still black-level-relative here, which is what makes a
-	 * plain subtraction correct.
+	 * Per-pixel sigma from the median absolute difference, then the noise
+	 * on a CELL average, which is what the shrinkage is applied to.
 	 */
-	if (irSubtract_ > 0.0f && counts_[Infrared]) {
-		const int32_t ir = sum[Infrared] / counts_[Infrared];
-		const int32_t d = static_cast<int32_t>(irSubtract_ * ir);
-		g -= d;
-		r -= d;
-		b -= d;
-	}
-
-	if (shading) {
-		const ShadingMap &s = *shading;
-		const uint32_t one = s.one ? s.one : 1;
-		if (s.gains[Green])
-			g = (int32_t)((int64_t)g * sampleGain(s.gains[Green], s.width, s.height, cx, cols, cy, rows) / one);
-		if (s.gains[Red])
-			r = (int32_t)((int64_t)r * sampleGain(s.gains[Red], s.width, s.height, cx, cols, cy, rows) / one);
-		if (s.gains[Blue])
-			b = (int32_t)((int64_t)b * sampleGain(s.gains[Blue], s.width, s.height, cx, cols, cy, rows) / one);
-	}
+	const float sigma = 1.048f * (float)med;
+	const uint8_t n = counts_[Infrared];
+	const float sigmaCell = n > 1 ? sigma / std::sqrt((float)n) : sigma;
 
 	/*
-	 * Re-add the pedestal. Downstream BlackLevel expects to subtract it;
-	 * handing it pre-subtracted data would make it subtract twice and
-	 * crush the shadows.
+	 * Ramp rather than step. A cut in the room lights moves the curve a
+	 * long way, and applied in one frame that reads as the colour popping;
+	 * an eighth per frame settles in about a fifth of a second, well under
+	 * the time the auto-exposure itself takes.
 	 */
-	const int32_t maxVal = maxValue_;
-	auto clamp = [maxVal](int32_t v) -> uint16_t {
-		if (v < 0)
-			return 0;
-		return v > maxVal ? (uint16_t)maxVal : (uint16_t)v;
-	};
+	if (irSigmaCell_ <= 0.0f)
+		irSigmaCell_ = sigmaCell;
+	else
+		irSigmaCell_ += (sigmaCell - irSigmaCell_) / 8.0f;
 
-	G = clamp(g + blackLevel_);
-	R = clamp(r + blackLevel_);
-	B = clamp(b + blackLevel_);
+	/* Summary for the log: the coefficient at the frame's mean IR level. */
+	const float mean = (float)irSum_ / (float)irSamples_;
+	const float I = mean > 0.0f ? mean : 0.0f;
+	irEffective_ = irSubtract_ * (I * I) /
+		       (I * I + irSigmaCell_ * irSigmaCell_);
+
+	irBuildTable();
 }
 
 void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
@@ -136,11 +229,15 @@ void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 				   uint16_t G[4], uint16_t &R, uint16_t &B) const
 {
 	int32_t cell[16];
+	int32_t cellMax = 0;
 	for (unsigned int dy = 0; dy < 4; dy++) {
 		const uint8_t *p = lines[dy] + (cx * 4) * 2;
 		for (unsigned int dx = 0; dx < 4; dx++) {
 			int32_t v = p[0] | (p[1] << 8);
-			cell[dy * 4 + dx] = v - blackLevel_;
+			v -= blackLevel_;
+			cell[dy * 4 + dx] = v;
+			if (v > cellMax)
+				cellMax = v;
 			p += 2;
 		}
 	}
@@ -152,6 +249,10 @@ void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 
 	int32_t r = counts_[Red] ? sum[Red] / counts_[Red] : 0;
 	int32_t b = counts_[Blue] ? sum[Blue] / counts_[Blue] : 0;
+
+	/* One cell in sixteen feeds the adaptive coefficient. */
+	if (irAdaptive_ && irSubtract_ > 0.0f && !(cx & 3) && !(cy & 3))
+		irStatsAccumulate(cell);
 
 	/*
 	 * Green per 2x2 quadrant. Derived from positions_ rather than assumed,
@@ -180,9 +281,19 @@ void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 		g[q] = gCell + (int32_t)(sharpness_ * (float)(gq - gCell));
 	}
 
+	/*
+	 * Optional infrared subtraction; see setIrSubtract(). Values are still
+	 * black-level-relative at this point, which is what makes a plain
+	 * subtraction the correct operation.
+	 */
 	if (irSubtract_ > 0.0f && counts_[Infrared]) {
 		const int32_t ir = sum[Infrared] / counts_[Infrared];
-		const int32_t d = static_cast<int32_t>(irSubtract_ * ir);
+		/*
+		 * Faded out near saturation - the raw MAX of the cell, not the
+		 * channel averages, because one clipped sample among eight is
+		 * already enough to make the arithmetic wrong.
+		 */
+		const int32_t d = irRolloff(irSubtractFor(ir), cellMax);
 		for (unsigned int q = 0; q < 4; q++)
 			g[q] -= d;
 		r -= d;
@@ -227,6 +338,8 @@ int RgbIrToBayer::convertSharp(const uint8_t *src, unsigned int srcWidth,
 	const unsigned int cols = srcWidth / 4;
 	const unsigned int rows = srcHeight / 4;
 	const unsigned int dstPitch = dstStride / 2;
+
+	irStatsReset();
 
 	/*
 	 * Each cell row produces output rows 2*cy and 2*cy+1, so converting
@@ -323,6 +436,8 @@ int RgbIrToBayer::convertSharp(const uint8_t *src, unsigned int srcWidth,
 			}
 		}
 	}
+
+	irStatsFinish();
 
 	return 0;
 }

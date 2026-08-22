@@ -102,60 +102,37 @@ public:
 		     unsigned int bitDepth = 10);
 
 	/**
-	 * \brief Convert one frame
+	 * \brief Convert one frame to half-resolution Bayer
 	 * \param[in] src 16-bit input, \a srcStride bytes per line
 	 * \param[in] srcWidth Input width, must be a multiple of 4
 	 * \param[in] srcHeight Input height, must be a multiple of 4
 	 * \param[out] dst 16-bit output, half the input dimensions
+	 * \param[in] order Bayer order to emit
 	 * \param[in] shading Optional per-channel gain maps
 	 *
-	 * The output mosaic is GRBG: green at (0,0), red at (0,1), blue at
-	 * (1,0), green at (1,1).
+	 * The output mosaic is GRBG by default: green at (0,0), red at (0,1),
+	 * blue at (1,0), green at (1,1).
+	 *
+	 * Chroma is one value per 4x4 cell. Red and blue are only 2 of the 16
+	 * positions each and a 2x2 output quad has exactly one slot for each,
+	 * so they map straight across with nothing discarded and there is
+	 * nothing to gain by doing more.
+	 *
+	 * Green is the choice. The cell holds eight of them and the quad has
+	 * two slots, so averaging all eight into ONE value and writing it to
+	 * both would leave luma flat across the cell - the output effectively
+	 * 4x4 binned when the geometry only calls for 2x. The mosaic makes
+	 * better available for free: split the cell into four 2x2 quadrants and
+	 * each holds exactly two greens, so the quad's two green slots can
+	 * carry the top-left and bottom-right quadrant means instead of one
+	 * number twice. Green then sits at the same density it does in Bayer,
+	 * so that is real detail, not interpolation. setSharpness() slides
+	 * between the two, and it is a noise trade rather than a free win - see
+	 * there before reaching for it. Luma is what the eye reads for
+	 * sharpness anyway, which is why green gets this treatment and chroma
+	 * does not.
 	 *
 	 * \return 0 on success, -EINVAL if the dimensions are not multiples of 4
-	 */
-	int convert(const uint8_t *src, unsigned int srcWidth,
-		    unsigned int srcHeight, unsigned int srcStride,
-		    uint16_t *dst, unsigned int dstStride,
-		    Order order = Order::GRBG,
-		    const ShadingMap *shading = nullptr) const;
-
-	/**
-	 * \brief Convert in place of the input, keeping its dimensions
-	 *
-	 * Writes each 4x4 cell's values into four identical 2x2 GRBG cells, so
-	 * the result is a valid Bayer image at the *input* resolution carrying
-	 * half-resolution detail.
-	 *
-	 * This exists so the conversion can be dropped in ahead of an existing
-	 * debayer without renegotiating any buffer size. Downstream sees the
-	 * dimensions it already expects. Detail is that of the half-size
-	 * output, which for a pipeline that scales down to 720p anyway is not
-	 * visible; prefer convert() where the size change can be accommodated.
-	 */
-	int convertSameSize(const uint8_t *src, unsigned int srcWidth,
-			    unsigned int srcHeight, unsigned int srcStride,
-			    uint16_t *dst, unsigned int dstStride, Order order,
-			    const ShadingMap *shading = nullptr) const;
-
-	/**
-	 * \brief Convert to half size, keeping green's spatial detail
-	 *
-	 * Same geometry and cost as convert(), but sharper. convert() averages
-	 * all eight green samples in the 4x4 cell into ONE value and writes it
-	 * to both green slots of the output quad, so luma is flat across the
-	 * cell - the output is effectively 4x4 binned when the geometry only
-	 * calls for 2x.
-	 *
-	 * The mosaic makes better available for free. Split the cell into four
-	 * 2x2 quadrants and each holds exactly two greens, so the quad's two
-	 * green slots can carry the top-left and bottom-right quadrant means
-	 * instead of one number twice. Green sits at the same density as it
-	 * does in Bayer, so this is real detail, not interpolation.
-	 *
-	 * Chroma stays per-cell: red and blue are only 2 of 16 positions each,
-	 * and a 2x2 output quad has just one slot for each, so there is nothing
-	 * to gain there. Luma is what the eye reads for sharpness anyway.
 	 */
 	int convertSharp(const uint8_t *src, unsigned int srcWidth,
 			 unsigned int srcHeight, unsigned int srcStride,
@@ -164,15 +141,10 @@ public:
 			 const ShadingMap *shading = nullptr) const;
 
 private:
-	/* Shared per-cell work: gather, average, shade, re-add the pedestal. */
-	void cellValues(const uint8_t *lines[4], unsigned int cx,
-			unsigned int cols, unsigned int cy, unsigned int rows,
-			const ShadingMap *shading,
-			uint16_t &G, uint16_t &R, uint16_t &B) const;
-
 	/*
-	 * As cellValues(), but green is returned per 2x2 quadrant of the cell,
-	 * in raster order (top-left, top-right, bottom-left, bottom-right).
+	 * Shared per-cell work: gather, average, shade, re-add the pedestal.
+	 * Green is returned per 2x2 quadrant of the cell, in raster order
+	 * (top-left, top-right, bottom-left, bottom-right).
 	 */
 	void cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 			     unsigned int cols, unsigned int cy,
@@ -192,6 +164,61 @@ private:
 	uint16_t maxValue_;
 	float irSubtract_ = 0.0f;
 
+	/*
+	 * Adaptive IR subtraction state. Statistics are gathered during the
+	 * conversion, which already has every cell in registers, and applied to
+	 * the next frame; exposure moves far slower than 33 ms, and this avoids
+	 * a second pass over five megapixels.
+	 */
+	static constexpr unsigned int kIrHistBins = 256;
+	bool irAdaptive_ = false;
+	mutable float irEffective_ = 0.0f;
+	mutable float irSigmaCell_ = 0.0f;
+	mutable int64_t irSum_ = 0;
+	mutable uint32_t irSamples_ = 0;
+	mutable uint32_t irDiffHist_[kIrHistBins] = {};
+	mutable uint32_t irDiffCount_ = 0;
+	/*
+	 * How much to subtract for each possible cell IR level, rebuilt once a
+	 * frame. A table because the shrinkage is a divide, and a divide in the
+	 * per-cell path is 300k of them a frame for a curve that only changes
+	 * when the light does.
+	 */
+	mutable std::vector<int32_t> irSubTable_;
+
+	/*
+	 * Scale an IR subtraction down as a cell approaches saturation.
+	 *
+	 * The model colour_true = colour_measured - k*IR holds only while
+	 * nothing is clipped. In a blown highlight - a ceiling light, a
+	 * reflection off anything shiny - every channel including IR pins at
+	 * full scale, so the subtraction removes k times the whole signal and
+	 * the result clamps at zero. The brightest thing in the frame comes out
+	 * BLACK: measured on this hardware, 14.1% of the pixels around a
+	 * ceiling light, against 0% with the subtraction disabled.
+	 *
+	 * Above the knee the measurement can no longer be trusted, so the
+	 * correction is faded out rather than switched off, which would put a
+	 * visible edge around every highlight. At full scale nothing is
+	 * subtracted and clipped white stays white, which is what a blown
+	 * highlight should look like.
+	 */
+	int32_t irRolloff(int32_t d, int32_t cellMax) const;
+
+	void irStatsReset() const;
+	void irStatsAccumulate(const int32_t cell[16]) const;
+	void irStatsFinish() const;
+	void irBuildTable() const;
+
+	/* Amount to subtract from R, G and B for a cell whose IR average is \a ir */
+	int32_t irSubtractFor(int32_t ir) const
+	{
+		if (ir <= 0 || irSubTable_.empty())
+			return 0;
+		return irSubTable_[ir < (int32_t)irSubTable_.size()
+					   ? ir : irSubTable_.size() - 1];
+	}
+
 public:
 	/**
 	 * \brief Set how much of the infrared plane to subtract from R, G and B
@@ -208,36 +235,77 @@ public:
 	 * the more colour-accurate; saturation applied afterwards buys chroma
 	 * without that noise cost, so prefer a low k with more saturation.
 	 */
-	void setIrSubtract(float k) { irSubtract_ = k; }
+	void setIrSubtract(float k)
+	{
+		irSubtract_ = k;
+		irEffective_ = k;
+		irBuildTable();
+	}
 
 	/**
-	 * \brief How much intra-cell green detail convertSharp() restores
+	 * \brief Scale the IR coefficient by how much of IR is real signal
 	 *
-	 * 0 makes convertSharp() identical to convert(): every output green is
-	 * the mean of all eight in the cell, which is the quietest option.
-	 * 1 uses the 2x2 quadrant mean, which is the sharpest.
+	 * A fixed coefficient is only right while the IR plane is well exposed.
+	 * IR is by far the weakest channel here, so it is the first to run out
+	 * of photons. Measured on this sensor in one frame: a well-lit patch
+	 * carries 61 counts of IR under 13.6 of noise, an SNR of 4.5, while a
+	 * dim patch of the same frame carries 3 counts under 5.2, an SNR of
+	 * 0.6. Subtracting 2x of the latter from R, G and B is subtracting
+	 * noise, not infrared - on a dark-room frame k=2.0 produced 1.7x the
+	 * grain of k=0.5, for saturation that was barely present to begin with.
 	 *
-	 * This is a resolution-for-noise trade and NOT a free win. Measured on
-	 * a real frame: 1 gives 1.49x the vertical detail but 1.43x the noise,
-	 * leaving detail-to-noise essentially unchanged at 1.04x. Averaging two
-	 * samples instead of eight can only divide read noise by sqrt(2) rather
-	 * than sqrt(8). On a low-detail scene the extra grain is what you see;
-	 * on a detailed one, the detail is. Hence a knob rather than a default.
+	 * Rather than add another knob to get wrong, pick k to minimise the
+	 * total error. Writing I for the true IR, s for the noise on the
+	 * estimate of it, and a for the coefficient set by setIrSubtract(),
+	 * subtracting k*(I + n) leaves a residual colour cast of (a - k)*I and
+	 * injects noise of k*s. The sum of squares
+	 *
+	 *     (a - k)^2 * I^2 + k^2 * s^2
+	 *
+	 * is minimised at
+	 *
+	 *     k = a * I^2 / (I^2 + s^2) = a * SNR^2 / (1 + SNR^2)
+	 *
+	 * which is Wiener shrinkage, and carries no tuning constant of its own:
+	 * it returns the full tuned coefficient where IR is clean and falls
+	 * away as IR becomes noise. On the two measurements above, with s the
+	 * noise on the cell average rather than on one pixel, it gives 1.98 in
+	 * the lit patch and 1.14 in the dim one.
+	 *
+	 * Crucially k is applied PER CELL, using that cell's own IR average as
+	 * I. A single frame-wide coefficient is the wrong object: a frame that
+	 * contains a lamp and a dim wall has a mean IR dominated by the lamp, so
+	 * global MSE says keep subtracting - measured on this hardware, a whole
+	 * dark room held k at 1.99 - while the wall, where the grain actually
+	 * is, sits at 3 counts of IR under 5 of noise. Shrinking per cell asks
+	 * the question where it matters and needs no frame mean at all.
+	 *
+	 * Only the noise estimate is frame-wide, which is what it should be:
+	 * read noise does not vary across the sensor, and estimating it from
+	 * the whole frame is what makes it robust. It is measured on the
+	 * previous frame, since exposure moves far slower than 33 ms.
+	 *
+	 * Note the cell IR average is the mean of counts_[Infrared] samples, so
+	 * its noise is sigma/sqrt(n) - four IR pixels per cell here, so half.
+	 * Using the per-pixel sigma instead would shrink twice as hard as the
+	 * algebra calls for.
 	 */
+	void setIrAdaptive(bool on) { irAdaptive_ = on; }
+
 	/**
-	 * \brief Restrict conversion to a band of output rows
-	 * \param[in] y0 First output row to produce
-	 * \param[in] y1 One past the last output row to produce
+	 * \brief Representative coefficient for the last frame
 	 *
-	 * The consumer of this conversion crops. On this machine the pre-pass
-	 * emits 1296x972 and the debayer then reads a 1280x720 window at
-	 * (8,126), so 252 of the 972 rows - 26% - are computed and thrown away.
-	 * Converting only the band that is actually read removes that work from
-	 * every frame, and the pipeline is CPU bound on one core.
-	 *
-	 * Rows outside the band are left untouched, so the caller must not read
-	 * them. Pass y1 <= y0 to disable and convert everything.
+	 * The coefficient now varies per cell, so this reports the value at the
+	 * frame's mean IR level - a summary for logging, not the thing applied.
 	 */
+	float effectiveIrSubtract() const { return irEffective_; }
+
+	/** \brief Effective coefficient for a cell whose IR average is \a ir */
+	float irCoefficientAt(int32_t ir) const
+	{
+		return ir > 0 ? (float)irSubtractFor(ir) / (float)ir : 0.0f;
+	}
+
 	/**
 	 * \brief Smooth red and blue across neighbouring cells
 	 * \param[in] radius 0 disables, 1 is a 3x3 cell average, 2 is 5x5
@@ -255,12 +323,42 @@ public:
 	 */
 	void setChromaBlur(unsigned int radius) { chromaBlur_ = radius; }
 
+	/**
+	 * \brief Restrict conversion to a band of output rows
+	 * \param[in] y0 First output row to produce
+	 * \param[in] y1 One past the last output row to produce
+	 *
+	 * The consumer of this conversion crops. On this machine the pre-pass
+	 * emits 1296x972 and the debayer then reads a 1280x720 window at
+	 * (8,126), so 252 of the 972 rows - 26% - are computed and thrown away.
+	 * Converting only the band that is actually read removes that work from
+	 * every frame, and the pipeline is CPU bound on one core.
+	 *
+	 * Rows outside the band are left untouched, so the caller must not read
+	 * them. Pass y1 <= y0 to disable and convert everything.
+	 */
 	void setActiveRows(unsigned int y0, unsigned int y1)
 	{
 		activeY0_ = y0;
 		activeY1_ = y1;
 	}
 
+	/**
+	 * \brief How much intra-cell green detail convertSharp() restores
+	 * \param[in] k 0 for the cell mean, 1 for the quadrant mean, clamped
+	 *
+	 * 0 makes every output green the mean of all eight in the cell, written
+	 * to both green slots of the quad, which is the quietest option and
+	 * leaves luma flat across the cell. 1 gives each green slot its own 2x2
+	 * quadrant mean, which is the sharpest. Values between blend the two.
+	 *
+	 * This is a resolution-for-noise trade and NOT a free win. Measured on
+	 * a real frame: 1 gives 1.49x the vertical detail but 1.43x the noise,
+	 * leaving detail-to-noise essentially unchanged at 1.04x. Averaging two
+	 * samples instead of eight can only divide read noise by sqrt(2) rather
+	 * than sqrt(8). On a low-detail scene the extra grain is what you see;
+	 * on a detailed one, the detail is. Hence a knob rather than a default.
+	 */
 	void setSharpness(float k) { sharpness_ = k < 0.0f ? 0.0f : (k > 1.0f ? 1.0f : k); }
 };
 
