@@ -51,15 +51,21 @@ int main(int argc, char **argv)
 	};
 
 	RgbIrToBayer conv(pattern, black, 10);
+	/*
+	 * Sharpness 0, so every output green is the mean of all eight in the
+	 * cell. That is exactly what the Python reference computes, and these
+	 * numbers are only meaningful if both sides average the same samples.
+	 */
+	conv.setSharpness(0.0f);
 
 	const unsigned int ow = w / 2, oh = h / 2;
 	const unsigned int ostride = ow * 2;
 	std::vector<uint16_t> dst(static_cast<size_t>(ow) * oh);
 
-	int ret = conv.convert(src.data(), w, h, stride,
-			       dst.data(), ostride, nullptr);
+	int ret = conv.convertSharp(src.data(), w, h, stride, dst.data(),
+				    ostride, RgbIrToBayer::Order::GRBG);
 	if (ret) {
-		fprintf(stderr, "convert failed: %d\n", ret);
+		fprintf(stderr, "conversion failed: %d\n", ret);
 		return 1;
 	}
 

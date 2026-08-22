@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /*
- * Does convertSharp() actually keep more detail than convert()?
+ * Does setSharpness() actually keep more detail?
  *
- * Feeds both a synthetic RGB-IR frame carrying a horizontal grating of known
- * period and amplitude, pulls the green samples back out of each Bayer result,
- * and reports the surviving modulation. A claim of "sharper" that is not
- * measured is just a claim.
+ * setSharpness(0) writes one cell-mean green to both green slots of the output
+ * quad; setSharpness(1) gives each slot its own 2x2 quadrant mean. This feeds
+ * both a synthetic RGB-IR frame carrying a horizontal grating of known period
+ * and amplitude, pulls the green samples back out of each Bayer result, and
+ * reports the surviving modulation. A claim of "sharper" that is not measured
+ * is just a claim.
+ *
+ * Only green is expected to move: sharpness does not touch chroma, and the
+ * grating is written into green alone so nothing else can account for a change.
  *
  * Build:  g++ -O2 -o /tmp/test-sharp test-sharp.cpp rgbir_to_bayer.cpp
  */
@@ -90,35 +95,43 @@ double greenModulation(const std::vector<uint16_t> &out, unsigned int w, unsigne
 
 int main()
 {
-	RgbIrToBayer conv(kPattern, kBlack, 10);
-	conv.setIrSubtract(0.0f);
+	/*
+	 * Two converters rather than one re-tuned between calls, so neither
+	 * result can depend on the order they ran in.
+	 */
+	RgbIrToBayer flat(kPattern, kBlack, 10);
+	RgbIrToBayer sharp(kPattern, kBlack, 10);
+	flat.setIrSubtract(0.0f);
+	sharp.setIrSubtract(0.0f);
+	flat.setSharpness(0.0f);   /* cell mean, one value to both green slots */
+	sharp.setSharpness(1.0f);  /* per-quadrant mean */
 
 	const unsigned int ow = kW / 2, oh = kH / 2;
 	const unsigned int ostride = ow * 2;
 
-	printf("  grating   convert()   convertSharp()   gain\n");
-	printf("  (src px)  p-p green   p-p green\n");
+	printf("  grating   sharpness 0   sharpness 1   gain\n");
+	printf("  (src px)  p-p green     p-p green\n");
 
 	bool improved = true, regressed = false;
 	for (double period : { 32.0, 16.0, 8.0, 4.0 }) {
 		std::vector<uint8_t> src = makeFrame(period);
 		std::vector<uint16_t> a(ow * oh, 0), b(ow * oh, 0);
 
-		if (conv.convert(src.data(), kW, kH, kW * 2, a.data(), ostride,
-				 RgbIrToBayer::Order::GRBG) != 0) {
-			printf("  convert() failed\n");
+		if (flat.convertSharp(src.data(), kW, kH, kW * 2, a.data(), ostride,
+				      RgbIrToBayer::Order::GRBG) != 0) {
+			printf("  conversion at sharpness 0 failed\n");
 			return 1;
 		}
-		if (conv.convertSharp(src.data(), kW, kH, kW * 2, b.data(), ostride,
-				      RgbIrToBayer::Order::GRBG) != 0) {
-			printf("  convertSharp() failed\n");
+		if (sharp.convertSharp(src.data(), kW, kH, kW * 2, b.data(), ostride,
+				       RgbIrToBayer::Order::GRBG) != 0) {
+			printf("  conversion at sharpness 1 failed\n");
 			return 1;
 		}
 
 		const double ma = greenModulation(a, ow, oh);
 		const double mb = greenModulation(b, ow, oh);
 		const double gain = ma > 0.5 ? mb / ma : (mb > 0.5 ? 999.0 : 1.0);
-		printf("  %6.0f    %8.1f    %8.1f       %5.2fx\n", period, ma, mb, gain);
+		printf("  %6.0f    %10.1f    %10.1f    %5.2fx\n", period, ma, mb, gain);
 
 		if (mb < ma - 0.5)
 			regressed = true;
@@ -128,13 +141,13 @@ int main()
 
 	printf("\n");
 	if (regressed) {
-		printf("  FAIL: convertSharp lost detail somewhere\n");
+		printf("  FAIL: sharpness 1 lost detail somewhere\n");
 		return 1;
 	}
 	if (!improved) {
-		printf("  FAIL: convertSharp gained nothing at the frequencies that matter\n");
+		printf("  FAIL: sharpness 1 gained nothing at the frequencies that matter\n");
 		return 1;
 	}
-	printf("  PASS: convertSharp preserves strictly more green detail\n");
+	printf("  PASS: sharpness 1 preserves strictly more green detail than 0\n");
 	return 0;
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /*
- * Run convert() and convertSharp() over the SAME real sensor frame and report
- * how much green detail each keeps.
+ * Run convertSharp() at sharpness 0 and at sharpness 1 over the SAME real
+ * sensor frame and report how much green detail each keeps.
  *
  * The on-camera A/B was inconclusive because the scene was clipped and almost
  * featureless, so neither path had anything at Nyquist to preserve. Feeding one
@@ -13,6 +13,8 @@
  *
  * Build:  g++ -O2 -o compare-real compare-real.cpp rgbir_to_bayer.cpp
  * Run:    ./compare-real raw.bin [width height]
+ *
+ * SHARPNESS overrides the sharp side, which defaults to 1.0.
  */
 
 #include "rgbir_to_bayer.h"
@@ -85,9 +87,9 @@ double laplacianVar(const std::vector<double> &g, unsigned int gw, unsigned int 
 }
 
 /*
- * The two green slots of a quad. convert() writes one cell average to both, so
- * this is identically zero for it, by construction. Anything non-zero is the
- * real intra-cell gradient that convertSharp recovers.
+ * The two green slots of a quad. Sharpness 0 writes one cell average to both,
+ * so this is identically zero for it, by construction. Anything non-zero is
+ * the real intra-cell gradient that a higher sharpness recovers.
  */
 double intraQuadGreenSpread(const std::vector<uint16_t> &bayer,
 			    unsigned int w, unsigned int h)
@@ -154,17 +156,22 @@ int main(int argc, char **argv)
 	}
 	fclose(f);
 
-	RgbIrToBayer conv(kPattern, 64, 10);
-	conv.setIrSubtract(1.0f);
-	if (const char *sh = getenv("SHARPNESS"))
-		conv.setSharpness(atof(sh));
+	const float sharpness = getenv("SHARPNESS") ? atof(getenv("SHARPNESS")) : 1.0f;
+
+	/* Two converters, so neither result depends on the order they ran in. */
+	RgbIrToBayer flat(kPattern, 64, 10);
+	RgbIrToBayer sharp(kPattern, 64, 10);
+	flat.setIrSubtract(1.0f);
+	sharp.setIrSubtract(1.0f);
+	flat.setSharpness(0.0f);
+	sharp.setSharpness(sharpness);
 
 	const unsigned int ow = W / 2, oh = H / 2;
 	std::vector<uint16_t> a(ow * oh, 0), b(ow * oh, 0);
-	if (conv.convert(src.data(), W, H, W * 2, a.data(), ow * 2,
-			 RgbIrToBayer::Order::GBRG) != 0 ||
-	    conv.convertSharp(src.data(), W, H, W * 2, b.data(), ow * 2,
-			      RgbIrToBayer::Order::GBRG) != 0) {
+	if (flat.convertSharp(src.data(), W, H, W * 2, a.data(), ow * 2,
+			      RgbIrToBayer::Order::GBRG) != 0 ||
+	    sharp.convertSharp(src.data(), W, H, W * 2, b.data(), ow * 2,
+			       RgbIrToBayer::Order::GBRG) != 0) {
 		fprintf(stderr, "conversion failed\n");
 		return 1;
 	}
@@ -178,7 +185,7 @@ int main(int argc, char **argv)
 	const double sa = intraQuadGreenSpread(a, ow, oh), sb = intraQuadGreenSpread(b, ow, oh);
 
 	printf("  frame %ux%u -> bayer %ux%u, green lattice %ux%u\n\n", W, H, ow, oh, gw, gh);
-	printf("  metric                       convert()   convertSharp()    ratio\n");
+	printf("  metric                      sharpness 0    sharpness %.2f    ratio\n", sharpness);
 	printf("  mean |vertical diff|        %9.3f      %9.3f    %6.2fx\n", dva, dvb, dva > 0 ? dvb / dva : 0);
 	printf("  laplacian variance          %9.1f      %9.1f    %6.2fx\n", lva, lvb, lva > 0 ? lvb / lva : 0);
 	printf("  intra-quad green spread     %9.3f      %9.3f\n", sa, sb);
@@ -206,9 +213,9 @@ int main(int argc, char **argv)
 
 	printf("\n");
 	if (sa > 0.001)
-		printf("  WARNING: convert() should write one value to both green slots.\n");
-	printf("  intra-quad spread is 0 for convert() by construction; %.2f for\n", sb);
-	printf("  convertSharp is the real detail inside each cell that was being\n");
+		printf("  WARNING: sharpness 0 should write one value to both green slots.\n");
+	printf("  intra-quad spread is 0 at sharpness 0 by construction; %.2f at\n", sb);
+	printf("  sharpness %.2f is the real detail inside each cell that was being\n", sharpness);
 	printf("  averaged away.\n");
 	return 0;
 }
