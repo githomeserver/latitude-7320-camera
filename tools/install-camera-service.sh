@@ -107,6 +107,36 @@ SHADING="${SHADING-$_default_shading}"
 # exposure. Useful for CCM fitting, where clipped patches carry no information.
 EV="${EV:-0}"
 
+# Chroma gain applied after the colour matrix, 0.0 to 2.0. 1.0 leaves it alone.
+#
+# This is the cheap way to buy apparent colour on this sensor. The matrix that
+# would fully correct its separation needs off-diagonals of +-3 and amplifies
+# noise 5.3x, against 1.9x for the one that ships, which is why the shipped
+# matrix is deliberately a compromise. A saturation multiplier costs chroma
+# noise instead of matrix conditioning - and chroma noise is what CHROMA_BLUR
+# already halves, so it is far more affordable here than the arithmetic alone
+# suggests.
+#
+# Only works because the tuning file lists Ccm BEFORE Adjust. Registration of
+# controls::Saturation happens in Adjust::init and reads a flag only Ccm::init
+# sets, so with the entries the other way round the camera never advertises the
+# control and the value is dropped before it reaches the IPA - silently, and
+# with a matrix installed. See tools/install-ccm.sh. Verify with:
+#
+#   cam --list-controls | grep -i saturation
+SATURATION="${SATURATION:-1.0}"
+
+# Omitted from the command line entirely at 1.0, so the default install produces
+# the same unit file it always did and the property only appears when asked for.
+case "$SATURATION" in
+    ''|*[!0-9.]*) echo "ERROR: SATURATION must be a number, got '$SATURATION'" >&2; exit 1 ;;
+esac
+if [ "$SATURATION" = "1.0" ] || [ "$SATURATION" = "1" ]; then
+    SAT_PROP=""
+else
+    SAT_PROP=" saturation=$SATURATION"
+fi
+
 # Output geometry. The sensor is 4:3 (2584x1944 after the debayer's crop), so a
 # 16:9 output must CROP, never stretch: forcing 4:3 into 16:9 with videoscale is
 # what made everything 34% wide and unusable for judging colour.
@@ -182,7 +212,7 @@ Environment=RGBIR_DENOISE_THR=$DENOISE_THR
 Environment=RGBIR_CHROMA_BLUR=$CHROMA_BLUR
 Environment="RGBIR_SHADING=$SHADING"
 Environment=LIBCAMERA_SOFTISP_MODE=cpu
-ExecStart=/usr/bin/gst-launch-1.0 -q libcamerasrc exposure-value=$EV ! video/x-raw,width=$WIDTH,height=$HEIGHT ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK
+ExecStart=/usr/bin/gst-launch-1.0 -q libcamerasrc exposure-value=$EV$SAT_PROP ! video/x-raw,width=$WIDTH,height=$HEIGHT ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK
 Restart=always
 RestartSec=2
 
