@@ -325,7 +325,18 @@ def main():
     # Neutral patches say whether white balance is still right; a CCM cannot
     # fix a white balance error and should not be asked to.
     wh = cam[18]
-    print(f"\n  white patch ratios: R/G {wh[0]/wh[1]:.3f}  B/G {wh[2]/wh[1]:.3f}"
+    # A clipped white patch reads (255, 255, 255), which gives ratios of exactly
+    # 1.000 whatever the white balance actually is. That is not a good reading,
+    # it is no reading at all - and it is convincing enough to have been taken
+    # for a healthy white balance across several captures here, while the honest
+    # figure at an unclipped exposure was R/G 0.450. Say so instead.
+    if peaks[18] >= CLIP:
+        print(f"\n  white patch ratios: UNMEASURABLE - the white patch is clipped"
+              f" (peak {peaks[18]}/255).")
+        print("  Clipped channels pin to 255 and read back as a perfect 1.000."
+              " Lower the exposure and re-capture.")
+    else:
+        print(f"\n  white patch ratios: R/G {wh[0]/wh[1]:.3f}  B/G {wh[2]/wh[1]:.3f}"
           "   (want ~1.000)")
 
     print(f"\n  neutral ramp (white -> black), linear:")

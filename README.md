@@ -687,6 +687,40 @@ doubled frame time here. The violet shadows in the CPU column are flare being
 amplified by the ~4.9x blue AWB gain; the GPU path does not apply that gain, so
 its blacks stay black. Correct the balance with the matrix instead.
 
+### Forcing an exposure, and the clipping trap
+
+There is no exposure control on this build (see the `EV` row above), and the AGC
+drives the mean of the histogram to the middle of the range. A colour target is
+mostly mid-tones with a few bright patches, so hitting that mean puts white and
+the top of the neutral ramp over 248 and clips them. **Screen brightness cannot
+fix it** - the AGC simply re-exposes to the same mean - which is why fitting
+attempts here kept landing either clipped or too dim with nothing in between.
+
+`upstream-libcamera/0002-ipa-simple-agc-Allow-a-fixed-exposure-for-measurement.patch`
+adds an override to the soft IPA, read once at startup:
+
+| variable | meaning |
+|---|---|
+| `SOFTISP_EXPOSURE` | exposure in sensor lines, 4 to 2016 here. Setting it pins exposure and skips the AGC. |
+| `SOFTISP_GAIN` | analogue gain multiplier, 1.0 to 16.0. Optional; without it gain stays under AGC control. |
+
+Applied to the service with a drop-in, since the supervisor starts it on demand:
+
+```sh
+sudo mkdir -p /etc/systemd/system/ov5678-camera.service.d
+printf '[Service]\nEnvironment=SOFTISP_EXPOSURE=2016\nEnvironment=SOFTISP_GAIN=1.0\n' \
+  | sudo tee /etc/systemd/system/ov5678-camera.service.d/99-fixed-exposure.conf
+sudo systemctl daemon-reload && sudo systemctl restart ov5678-ondemand.service
+```
+
+**A clipped white patch reads a perfect white balance.** Clipped channels pin to
+255, so R/G and B/G both come back as exactly 1.000 no matter what the white
+balance is doing. That is not a good reading, it is no reading - and it is
+convincing: several captures here reported 1.000 with white clipped, while the
+honest figure at an unclipped exposure was **R/G 0.450**. `solve-ccm.py` now
+refuses to print the ratio when the white patch is clipped. Trust the ratio only
+when nothing in the clipped list is a neutral patch.
+
 ### Deriving your own matrix
 
 ```sh

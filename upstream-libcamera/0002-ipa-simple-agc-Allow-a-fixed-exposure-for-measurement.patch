@@ -1,0 +1,60 @@
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -8,8 +8,10 @@
+ #include "agc.h"
+ 
+ #include <stdint.h>
++#include <stdlib.h>
+ 
+ #include <libcamera/base/log.h>
++#include <libcamera/base/utils.h>
+ 
+ #include "control_ids.h"
+ 
+@@ -110,6 +112,46 @@
+ 	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
+ 	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
+ 
++	/*
++	 * Manual override, for measurement work that needs a KNOWN exposure.
++	 *
++	 * This IPA registers no exposure controls at all - on this hardware the
++	 * camera advertises only Saturation, Contrast and Gamma - so an
++	 * application has no way to ask for a different exposure, and
++	 * ExposureValue is accepted by the pipeline and silently dropped.
++	 * Writing the sensor's own V4L2 control does not work either: this
++	 * function runs every frame and overwrites it within one frame time.
++	 *
++	 * That matters for colour matrix fitting. The AGC drives the mean of the
++	 * histogram to the middle of the range, and a colour target is mostly
++	 * mid-tones with a few bright patches, so hitting that mean puts white
++	 * and the top of the neutral ramp above 248 and clips them. Clipped
++	 * patches carry no information, and the white patch is the fit's own
++	 * anchor. Screen brightness cannot fix it - the AGC simply re-exposes to
++	 * the same mean - so the only exit is to set the exposure directly.
++	 *
++	 * SOFTISP_EXPOSURE is in sensor lines, SOFTISP_GAIN is an analogue gain
++	 * multiplier. Setting the exposure alone leaves gain under AGC control.
++	 */
++	static const int32_t fixedExposure = []() {
++		const char *e = utils::secure_getenv("SOFTISP_EXPOSURE");
++		return e ? atoi(e) : 0;
++	}();
++	static const double fixedGain = []() {
++		const char *e = utils::secure_getenv("SOFTISP_GAIN");
++		return e ? atof(e) : 0.0;
++	}();
++
++	if (fixedExposure > 0) {
++		frameContext.sensor.exposure = fixedExposure;
++		context.activeState.agc.exposure = fixedExposure;
++		if (fixedGain > 0.0) {
++			frameContext.sensor.gain = fixedGain;
++			context.activeState.agc.again = fixedGain;
++		}
++		context.activeState.agc.valid = true;
++		return;
++	}
+ 
+ 	if (!context.activeState.agc.valid) {
+ 		/*
