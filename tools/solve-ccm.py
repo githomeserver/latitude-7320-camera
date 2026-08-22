@@ -180,11 +180,20 @@ def capture():
         # continuously, so exposure and white balance are already converged
         # before this reader ever attaches. Just take a run of frames and keep
         # the last.
+        # 240 frames, keep the last. The comment above used to justify 60 by
+        # saying the producer runs continuously so exposure is already settled
+        # when this reader attaches. That stopped being true when the pipeline
+        # moved to starting ON DEMAND: attaching is what starts it, so the first
+        # frames are the AGC's own convergence. It walks in ~10% steps at a
+        # quarter of the frame rate and takes about four seconds to come down
+        # from clipping, so a 60-frame capture was sampling the middle of that -
+        # which is why the same scene reported clipped one minute and dim the
+        # next. 240 frames is eight seconds; the last one is settled.
         subprocess.run(
             ["gst-launch-1.0", "-q", "v4l2src", "device=/dev/video0",
-             "num-buffers=60", "!", "videoconvert", "!", "pngenc",
-             "!", "multifilesink", f"location={tmp}/f-%02d.png"],
-            capture_output=True, timeout=120)
+             "num-buffers=240", "!", "videoconvert", "!", "pngenc",
+             "!", "multifilesink", f"location={tmp}/f-%03d.png"],
+            capture_output=True, timeout=180)
     except subprocess.TimeoutExpired:
         sys.exit("capture timed out.\n"
                  "  Another process may still hold the camera - check with:\n"
