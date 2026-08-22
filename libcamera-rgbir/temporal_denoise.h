@@ -72,6 +72,34 @@ public:
 		height_ = height;
 	}
 
+	/**
+	 * \brief Tell the filter how much the noise has been amplified, and where
+	 *
+	 * Lens shading is applied before this runs, and it multiplies the corners
+	 * of this sensor by up to 3.5x - signal AND noise alike. The motion test
+	 * is a single threshold in raw counts, so amplified corner noise sails
+	 * past it, every corner tile is classified as moving, and the filter
+	 * passes it straight through. Measured on this hardware: temporal noise
+	 * 1.11 at the centre against 3.43 in the corner, where turning shading
+	 * off gave 1.06 in BOTH. The denoise was doing nothing over most of the
+	 * frame area, which is most of what a viewer sees.
+	 *
+	 * Raising the threshold is not the fix. At 140 the corners came right
+	 * (3.43 -> 1.81) and the centre went to 6.16, because real motion then
+	 * fell under the threshold and got averaged into a smear.
+	 *
+	 * So divide the known amplification back out: each tile's motion is
+	 * scaled by the gain applied there, and the threshold and noise floor
+	 * then mean the same thing everywhere. \a map is the green plane of the
+	 * shading map, spanning the frame; null disables the correction.
+	 *
+	 * \param[in] rowOffset Absolute frame row of this band's first row, since
+	 *	the caller may pass only the band it converted.
+	 */
+	void setGainMap(const uint16_t *map, unsigned int mapW, unsigned int mapH,
+			uint16_t one, unsigned int frameW, unsigned int frameH,
+			unsigned int rowOffset);
+
 	/** \brief Denoise \a frame of \a count samples in place */
 	void apply(uint16_t *frame, size_t count);
 
@@ -82,6 +110,9 @@ public:
 	float lastMotionFraction() const { return motionFraction_; }
 
 private:
+	/* Recompute the per-tile gain; cheap, and only on a geometry change. */
+	void buildTileScale(unsigned int tx, unsigned int ty);
+
 	static constexpr unsigned int kBlock = 256;   /* fallback when geometry is unknown */
 	static constexpr unsigned int kTile = 32;     /* square tile side, in samples */
 
@@ -90,6 +121,16 @@ private:
 	std::vector<uint16_t> history_;
 	std::vector<uint16_t> blockMotion_;
 	std::vector<uint16_t> scratch_;
+	/* Per-tile gain, 8.8 fixed point, 256 = unity. Rebuilt only on change. */
+	std::vector<uint16_t> tileScale_;
+	const uint16_t *gainMap_ = nullptr;
+	unsigned int gainMapW_ = 0;
+	unsigned int gainMapH_ = 0;
+	unsigned int frameW_ = 0;
+	unsigned int frameH_ = 0;
+	unsigned int rowOffset_ = 0;
+	uint16_t gainOne_ = 0;
+	bool gainDirty_ = true;
 	float alpha_ = 1.0f;
 	uint16_t threshold_ = 32;
 	float motionFraction_ = 0.0f;

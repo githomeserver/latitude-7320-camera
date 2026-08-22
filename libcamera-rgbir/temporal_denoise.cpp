@@ -22,6 +22,78 @@ void TemporalDenoise::configure(float alpha, uint16_t threshold)
 	threshold_ = threshold ? threshold : 1;
 }
 
+void TemporalDenoise::setGainMap(const uint16_t *map, unsigned int mapW,
+				 unsigned int mapH, uint16_t one,
+				 unsigned int frameW, unsigned int frameH,
+				 unsigned int rowOffset)
+{
+	if (map == gainMap_ && mapW == gainMapW_ && mapH == gainMapH_ &&
+	    one == gainOne_ && frameW == frameW_ && frameH == frameH_ &&
+	    rowOffset == rowOffset_)
+		return;
+
+	gainMap_ = map;
+	gainMapW_ = mapW;
+	gainMapH_ = mapH;
+	gainOne_ = one;
+	frameW_ = frameW;
+	frameH_ = frameH;
+	rowOffset_ = rowOffset;
+	gainDirty_ = true;
+}
+
+namespace {
+
+/* Bilinear sample of a coarse map at normalised (u, v), both in [0, 1]. */
+uint32_t sampleMap(const uint16_t *map, unsigned int mw, unsigned int mh,
+		   float u, float v)
+{
+	if (mw < 2 || mh < 2)
+		return map[0];
+
+	const float fx = u * (mw - 1), fy = v * (mh - 1);
+	unsigned int x0 = (unsigned int)fx, y0 = (unsigned int)fy;
+	if (x0 > mw - 2)
+		x0 = mw - 2;
+	if (y0 > mh - 2)
+		y0 = mh - 2;
+	const float dx = fx - x0, dy = fy - y0;
+
+	const float a = map[y0 * mw + x0], b = map[y0 * mw + x0 + 1];
+	const float c = map[(y0 + 1) * mw + x0], d = map[(y0 + 1) * mw + x0 + 1];
+	const float top = a + (b - a) * dx, bot = c + (d - c) * dx;
+	return (uint32_t)(top + (bot - top) * dy + 0.5f);
+}
+
+} /* namespace */
+
+void TemporalDenoise::buildTileScale(unsigned int tx, unsigned int ty)
+{
+	tileScale_.assign((size_t)tx * ty, 256);
+	if (!gainMap_ || !gainOne_ || !frameW_ || !frameH_)
+		return;
+
+	for (unsigned int by = 0; by < ty; by++) {
+		for (unsigned int bx = 0; bx < tx; bx++) {
+			/*
+			 * Tile centre, in absolute frame coordinates - the
+			 * caller may hand us only the band it converted.
+			 */
+			const float cx = bx * kTile + kTile / 2.0f;
+			const float cy = by * kTile + kTile / 2.0f + rowOffset_;
+			const float u = std::min(1.0f, cx / (float)(frameW_ - 1));
+			const float v = std::min(1.0f, cy / (float)(frameH_ - 1));
+			const uint32_t g = sampleMap(gainMap_, gainMapW_, gainMapH_, u, v);
+			uint32_t s = g * 256u / gainOne_;
+			if (s < 1)
+				s = 1;
+			else if (s > 65535)
+				s = 65535;
+			tileScale_[(size_t)by * tx + bx] = (uint16_t)s;
+		}
+	}
+}
+
 void TemporalDenoise::apply(uint16_t *frame, size_t count)
 {
 	if (alpha_ >= 1.0f) {
@@ -117,6 +189,22 @@ void TemporalDenoise::apply(uint16_t *frame, size_t count)
 			}
 		}
 		blockMotion_[b] = (uint16_t)(n ? acc / n : 0);
+	}
+
+	/*
+	 * Divide out the gain applied to each tile, so a tile's motion means
+	 * the same thing wherever it sits. Without this the shading-amplified
+	 * corners read as permanent motion and are never averaged at all.
+	 */
+	if (tiled && gainMap_) {
+		if (gainDirty_ || tileScale_.size() != blocks) {
+			buildTileScale(tx, ty);
+			gainDirty_ = false;
+		}
+		for (unsigned int b = 0; b < blocks; b++) {
+			const uint32_t s = tileScale_[b];
+			blockMotion_[b] = (uint16_t)((uint32_t)blockMotion_[b] * 256u / s);
+		}
 	}
 
 	/* nth_element, not sort: only the 10th percentile is wanted. */
