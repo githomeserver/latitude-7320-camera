@@ -201,7 +201,8 @@ on this unit, and a temporal denoise runs on the mosaic.
 | white balance (linear R/G) | 0.372 | ~1.00 |
 | red and blue | transposed | correct |
 | corner brightness (linear, vs centre) | 0.28 | **1.00** |
-| temporal noise, still scene | baseline | **2.0x cleaner** |
+| temporal noise, still scene | baseline | **2.0x cleaner**, corners included |
+| blown highlights | went **black** | white |
 | CPU while streaming | 104% of one core | **78%** |
 | CPU with nothing watching | 104% of one core | **5.5%** |
 | CPU temperature, idle | 99 C | **43 C** |
@@ -440,7 +441,7 @@ stock libcamera 0.7.0             R/G 0.372   B/G 0.897    saturation 34%
   opposite case — so it is reported as an observation from source, with no
   patch. Reported, not fixed.
 
-### 7. `Saturation` is silently inert without a CCM (libcamera)
+### 7. `Saturation` is silently inert unless `Ccm` is listed before `Adjust` (libcamera)
 
 `Adjust` implements `controls::Saturation` by writing `combinedMatrix`, but
 both the control's registration and its application are gated on
@@ -449,8 +450,28 @@ one place, `Ccm::init` (`ccm.cpp:39`), which runs only if the tuning file
 defines a `Ccm` algorithm.
 
 So with no `ccms` section, `libcamerasrc saturation=2.0` is accepted and does
-nothing at all, with no warning. Adding an identity `Ccm` makes the same
-control start working. → `tools/install-ccm.sh`, `tools/set-saturation.sh`
+nothing at all, with no warning.
+
+**Adding a `Ccm` is necessary but not sufficient**, which cost a while to find.
+Algorithms are initialised in the order the tuning file lists them, and the
+registration at `adjust.cpp:33` reads `ccmEnabled` during `Adjust::init`. If
+`Ccm` is listed *after* `Adjust`, the flag is still false at that moment, the
+control is never registered, and the camera does not advertise `Saturation` at
+all - so the value is dropped before it ever reaches the IPA. Measured with a
+real matrix installed but listed last:
+
+| `saturation=` | 0.0 | 1.0 | 2.0 |
+|---|---|---|---|
+| mean chroma, `Ccm` after `Adjust` | 3.86 | 3.87 | 3.87 |
+| mean chroma, `Ccm` before `Adjust` | **1.00** | **4.01** | **7.99** |
+
+`cam --list-controls` is the quick check: it shows `Contrast` and `Gamma` but no
+`Saturation` when the order is wrong. The constraint has two sides, because
+`Ccm` must also come *after* `Awb` - `Awb` right-multiplies its gains into
+`combinedMatrix` and `Ccm` left-multiplies, so that order gives `ccm * gains`,
+the matrix acting on white-balanced data. `BlackLevel -> Awb -> Ccm -> Adjust`
+satisfies both, and `tools/install-ccm.sh` now inserts it there and asserts both
+bounds. → `tools/install-ccm.sh`, `tools/set-saturation.sh`
 
 ## Installing
 

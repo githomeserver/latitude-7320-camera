@@ -11,12 +11,26 @@
 #    which runs only if the tuning file defines a Ccm algorithm. Adjust's
 #    saturation knob writes into that same combinedMatrix and is itself gated
 #    on ccmEnabled (adjust.cpp:104). So with no CCM in the tuning file,
-#    "libcamerasrc saturation=2.0" is silently ignored. Install even an
-#    identity matrix and it starts working.
+#    "libcamerasrc saturation=2.0" is silently ignored.
 #
-# The Ccm entry must come after Awb: Awb right-multiplies its gains into
-# combinedMatrix and Ccm left-multiplies, so that order gives ccm * gains,
-# i.e. the matrix acts on white-balanced data.
+# WHERE THE Ccm ENTRY GOES, AND WHY BOTH BOUNDS MATTER
+#
+# After Awb: Awb right-multiplies its gains into combinedMatrix and Ccm
+# left-multiplies, so that order gives ccm * gains - the matrix acts on
+# white-balanced data.
+#
+# Before Adjust: algorithms are initialised in file order, and Adjust::init
+# decides whether to REGISTER controls::Saturation by reading ccmEnabled
+# (adjust.cpp:33). If Ccm has not run yet the flag is still false, the control
+# is never registered, and the camera does not advertise Saturation at all - so
+# setting it is dropped before it ever reaches the IPA.
+#
+# This script used to append the block to the END of the list, which put it
+# after Adjust and left saturation dead even with a matrix installed. Measured
+# with the matrix present but listed last: saturation 0.0, 1.0 and 2.0 all gave
+# a mean chroma of 3.86 - no effect at all - and cam --list-controls showed
+# Contrast and Gamma but no Saturation. With Ccm ahead of Adjust the same three
+# settings give 1.00, 4.01 and 7.99, exactly linear.
 #
 # Run as root:
 #   sudo ./install-ccm.sh sat=2.0            saturation matrix
@@ -85,8 +99,8 @@ echo "== $SPEC =="
 echo "   [$MATRIX]"
 
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
-# Append the Ccm block to the algorithms list. The stock file ends with the
-# document terminator, so drop that, add the block, and put it back.
+# The stock file ends with the document terminator; drop it here and put it back
+# once the block has been inserted.
 sed '/^\.\.\.$/d' "$SRC" > "$TMP"
 
 if [ -n "$BL" ]; then
@@ -96,13 +110,29 @@ if [ -n "$BL" ]; then
     sed -i "s/^      blackLevel: .*/      blackLevel: $BL/" "$TMP"
     echo "   blackLevel: $BL  (sensor pedestal is 4122; >> 8 = $((BL >> 8)) in 8-bit)"
 fi
-cat >> "$TMP" <<EOF
-  - Ccm:
+# Insert directly after the Awb entry, which satisfies both bounds at once.
+# Line based rather than a YAML round trip, so the file keeps its comments -
+# they carry the measurements that justify the black level.
+CCM_BLOCK="  - Ccm:
       ccms:
         - ct: $CT
-          ccm: [ $MATRIX ]
-...
-EOF
+          ccm: [ $MATRIX ]"
+python3 - "$TMP" "$CCM_BLOCK" <<'INSERT'
+import sys
+path, block = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+try:
+    awb = next(i for i, l in enumerate(lines) if l.strip() == "- Awb:")
+except StopIteration:
+    sys.exit("ERROR: no Awb entry in the tuning file")
+indent = len(lines[awb]) - len(lines[awb].lstrip())
+end = awb + 1
+while end < len(lines) and lines[end].strip() and \
+      (len(lines[end]) - len(lines[end].lstrip())) > indent:
+    end += 1
+open(path, "w").write("\n".join(lines[:end] + block.split("\n") + lines[end:]))
+INSERT
+printf '...\n' >> "$TMP"
 
 # Fail before touching anything installed if the result is not valid YAML.
 python3 - "$TMP" <<'PY' || exit 1
@@ -116,6 +146,9 @@ algs = [list(a)[0] for a in d["algorithms"]]
 assert "Ccm" in algs, "Ccm missing"
 assert algs.index("Ccm") > algs.index("Awb"), \
     "Ccm must come after Awb, or the matrix multiplies in the wrong order"
+if "Adjust" in algs:
+    assert algs.index("Ccm") < algs.index("Adjust"), \
+        "Ccm must come before Adjust, or Saturation is never registered"
 print("   yaml ok, order ok:", " -> ".join(algs))
 PY
 
