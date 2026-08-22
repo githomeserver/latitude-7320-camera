@@ -103,8 +103,16 @@ SHADING="${SHADING-$_default_shading}"
 # Exposure-value offset, in stops, applied while auto-exposure stays enabled.
 # Dimming the subject does NOT reduce exposure - the AGC simply exposes longer
 # to reach the same mean level, which is why screen brightness had almost no
-# effect on clipping. EV is the knob that actually works: EV=-1 halves the
-# exposure. Useful for CCM fitting, where clipped patches carry no information.
+# effect on clipping.
+#
+# EV DOES NOT CURRENTLY WORK, and the note that used to sit here saying it was
+# "the knob that actually works" was wrong. libcamerasrc accepts the property,
+# but this build never advertises ExposureValue, so it is dropped before it
+# reaches the IPA - cam --list-controls returns exactly three controls here:
+# Saturation, Contrast, Gamma. Nothing for exposure, gain or white balance. The
+# AGC is fine, the picture is correctly exposed; there is simply no knob. Setting
+# the sensor's own exposure control with v4l2-ctl is overwritten within a frame.
+# Left in place in case a later libcamera registers it.
 EV="${EV:-0}"
 
 # Chroma gain applied after the colour matrix, 0.0 to 2.0. 1.0 leaves it alone.
