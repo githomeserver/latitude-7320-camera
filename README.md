@@ -964,8 +964,8 @@ they stand.
 | ov5675 ACPI id | linux-media | held, needs the format question settled |
 | ipu-bridge entry | linux-media | held with the above |
 | AWB gain range | libcamera-devel | not sent |
-| debayer out-of-bounds crash fix | libcamera-devel | not sent, and unrelated to RGB-IR |
-| `Saturation` inert without a `Ccm` (report only) | libcamera-devel | not sent |
+| debayer out-of-bounds crash fix | libcamera-devel | **not needed - fixed upstream in v0.7.2** (`7d650a23`, "Fix black level handling in CPU ISP", which added both a `.clamp()` and a `div` guard). Our build is v0.7.0, which predates it. Nothing to send; update libcamera instead. |
+| `Saturation` dropped when `Ccm` follows `Adjust` | libcamera-devel | report drafted, `upstream-libcamera/SATURATION-ORDER-REPORT.txt` |
 
 **The real fix needs an ABI addition first.** There is no RGB-IR media bus code in
 mainline V4L2 - checked at v7.2-rc7, 36 Bayer codes and none for an IR mosaic -

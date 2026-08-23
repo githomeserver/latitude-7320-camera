@@ -1,0 +1,81 @@
+Subject: [BUG] ipa: simple: Saturation is silently dropped when Ccm is listed after Adjust
+
+Hi,
+
+The software ISP's Saturation control is silently never registered if a tuning
+file lists the Ccm algorithm after Adjust. The control does not appear on the
+camera at all, applications setting it see no error, and nothing is logged. It
+took a while to find because every symptom points at the control being applied
+and having no effect, rather than at the control not existing.
+
+Mechanism, on master (62d4bfc4):
+
+  - src/ipa/libipa/module.h:96 - createAlgorithms() walks the tuning file's
+    algorithm list in order and calls init() on each in turn.
+
+  - src/ipa/simple/algorithms/ccm.cpp:25 - Ccm::init() sets
+    context.ccmEnabled = true.
+
+  - src/ipa/simple/algorithms/adjust.cpp:33 - Adjust::init() registers
+    controls::Saturation only if context.ccmEnabled is already true.
+
+  - src/ipa/simple/soft_simple.cpp:180 - the finished ctrlMap is snapshotted at
+    the end of IPASoftSimple::init() and handed to the pipeline handler.
+
+So the flag is read during Adjust::init() but only written during Ccm::init().
+List Adjust first and it is still false at that moment, Saturation is never put
+in ctrlMap, and the camera never advertises it. The application's value is
+dropped before it reaches the IPA.
+
+Reproduction, with a tuning file containing a valid Ccm:
+
+  algorithms:
+    - BlackLevel:
+    - Awb:
+    - Adjust:
+    - Agc:
+    - Ccm:            # after Adjust
+
+  $ cam -c1 --list-controls | grep -i saturation
+  (nothing - Contrast and Gamma are listed, Saturation is absent)
+
+Move the Ccm entry above Adjust and the same file gives:
+
+  Control: [inout] libcamera::Saturation: [0.000000..2.000000]
+
+The decisive evidence above is `cam --list-controls`, which exercises only
+upstream code. The numbers below come from a build carrying local modifications
+for an RGB-IR sensor, so treat them as illustrating the effect rather than as
+something to reproduce exactly - mean chroma of one fixed scene at three
+settings, everything but the algorithm order held constant:
+
+  Ccm after Adjust    saturation 0.0 / 1.0 / 2.0  ->  3.86  3.87  3.87
+  Ccm before Adjust   saturation 0.0 / 1.0 / 2.0  ->  1.00  4.01  7.99
+
+The first row is the bug: saturation 0.0 should give a greyscale image and does
+nothing at all. The second is the same file with only the order changed.
+
+I have not sent a patch because the right fix depends on conventions I do not
+know well enough, and there seem to be at least three reasonable ones:
+
+  1. Determine ccmEnabled from the parsed tuning data before any algorithm's
+     init() runs, since whether a Ccm exists is a static property of the file
+     and not something that should depend on evaluation order.
+
+  2. Register the control unconditionally in Adjust::init() and keep the
+     existing ccmEnabled gate on the apply path. This trades a missing control
+     for an inert one, which may not be an improvement.
+
+  3. Log a warning when Adjust::init() runs with ccmEnabled false, which does
+     not fix it but makes it findable.
+
+Happy to write whichever is preferred.
+
+For context, the same gate means Saturation also does nothing when a tuning file
+has no Ccm at all. That case at least has a reason - there is no combined matrix
+to write into - though I could not find it documented anywhere, so it may be
+worth a note either way. This report is about the other case: a Ccm that IS
+present and correct, silently defeated by where it sits in the list.
+
+Thanks,
+Sahan Nissanka
