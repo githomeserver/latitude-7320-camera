@@ -44,7 +44,10 @@ set -eu
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/../libcamera/ov5675.yaml"
-CT=3100     # matches the ~3139 K this sensor reports indoors; with a single
+# Respect the environment. This was a plain assignment, so `CT=5000 ./install-ccm.sh`
+# silently labelled a matrix measured at 5000 K as 3100 - the same trap IRSUB hit
+# in install-camera-service.sh, and the second time this pattern has bitten here.
+CT="${CT:-3100}"   # matches the ~3139 K this sensor reports indoors; with a single
             # entry getInterpolated() returns it for every temperature anyway.
 
 # bl=<n> raises the black level above the sensor's own pedestal (4122) to soak

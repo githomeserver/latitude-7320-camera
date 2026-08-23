@@ -199,6 +199,12 @@ def capture():
                  "  Another process may still hold the camera - check with:\n"
                  "    pgrep -a gst-launch\n"
                  "  The CPU debayer is also slower; wait a few seconds and retry.")
+    # Remove the frames. Without this every capture leaks a directory of 240
+    # PNGs into /tmp - about 260 MB a run, which filled a 7.4 GB tmpfs in one
+    # afternoon of fitting and then broke unrelated commands with ENOSPC.
+    import atexit, shutil
+    atexit.register(shutil.rmtree, tmp, True)
+
     hr = exposure_headroom()
     if hr:
         e_min, e_max, e = hr["exposure"]

@@ -34,6 +34,10 @@ algorithms:
   - BlackLevel:
       blackLevel: 4122
   - Awb:
+  - Ccm:
+      ccms:
+        - ct: 5000
+          ccm: [ 0.4968, 0.0826, 0.4206, -0.3643, 1.9737, -0.6094, -0.1274, 0.3025, 0.8249 ]
   - Adjust:
   - Agc:
 ...
