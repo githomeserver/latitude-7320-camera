@@ -1,0 +1,53 @@
+--- a/src/ipa/simple/algorithms/awb.cpp
++++ b/src/ipa/simple/algorithms/awb.cpp
+@@ -9,8 +9,10 @@
+ 
+ #include <numeric>
+ #include <stdint.h>
++#include <stdlib.h>
+ 
+ #include <libcamera/base/log.h>
++#include <libcamera/base/utils.h>
+ 
+ #include <libcamera/control_ids.h>
+ 
+@@ -97,6 +99,39 @@
+ 		static_cast<float>(sum.g()) / std::max<uint64_t>(sum.b(), 1),
+ 	} };
+ 
++	/*
++	 * Manual override, for fitting a colour matrix.
++	 *
++	 * This is grey world: it makes the average of the SCENE neutral. That is
++	 * a reasonable thing to do to a photograph and the wrong thing to do to a
++	 * colour target, whose average is not neutral by construction - so the
++	 * white patch comes out tinted however well the frame is exposed.
++	 * Measured on a 24-patch target here, white sat at R/G 0.81 with the
++	 * gains nowhere near any limit.
++	 *
++	 * A matrix fit cannot repair that. The fit is constrained white
++	 * preserving, so neutral in stays neutral out by construction, and asking
++	 * it to correct a white balance error instead distorts every other
++	 * colour. The white balance has to be right BEFORE the fit, and this IPA
++	 * registers neither AwbEnable nor ColourGains, so there is otherwise no
++	 * way to hold it while the target is on screen.
++	 *
++	 * Green is always 1.0, as grey world keeps it, so these are the red and
++	 * blue gains relative to green.
++	 */
++	static const float fixedR = []() {
++		const char *e = utils::secure_getenv("SOFTISP_AWB_R");
++		return e ? static_cast<float>(atof(e)) : 0.0f;
++	}();
++	static const float fixedB = []() {
++		const char *e = utils::secure_getenv("SOFTISP_AWB_B");
++		return e ? static_cast<float>(atof(e)) : 0.0f;
++	}();
++	if (fixedR > 0.0f)
++		gains.r() = fixedR;
++	if (fixedB > 0.0f)
++		gains.b() = fixedB;
++
+ 	RGB<double> rgbGains{ { 1 / gains.r(), 1 / gains.g(), 1 / gains.b() } };
+ 	context.activeState.awb.temperatureK = estimateCCT(rgbGains);
+ 	metadata.set(controls::ColourTemperature, context.activeState.awb.temperatureK);
