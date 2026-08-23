@@ -1,0 +1,534 @@
+--- a/src/libcamera/software_isp/debayer_cpu.h
++++ b/src/libcamera/software_isp/debayer_cpu.h
+@@ -23,6 +23,8 @@
+ #include "libcamera/internal/software_isp/swstats_cpu.h"
+ 
+ #include "debayer.h"
++#include "rgbir_to_bayer.h"
++#include "temporal_denoise.h"
+ 
+ namespace libcamera {
+ 
+@@ -141,6 +143,26 @@
+ 	debayerFn debayer2_;
+ 	debayerFn debayer3_;
+ 	Rectangle window_;
++	/* RGB-IR pre-pass, enabled by LIBCAMERA_RGBIR. */
++	std::unique_ptr<RgbIrToBayer> rgbIr_;
++	TemporalDenoise denoise_;
++	unsigned int rgbIrRow0_ = 0;
++	unsigned int rgbIrRow1_ = 0;
++	/* Lens shading gains loaded from disk, and the map that points into them. */
++	std::vector<uint16_t> shadingData_;
++	RgbIrToBayer::ShadingMap shadingMap_ = {};
++	bool shadingLoaded_ = false;
++	bool shadingValid_ = false;
++	std::vector<uint16_t> rgbIrScratch_;
++	/* Last adaptive IR coefficient reported, so the log only marks changes. */
++	float irLoggedIrSub_ = -1.0f;
++	/* Full height of the half-size mosaic, for mapping the shading map. */
++	unsigned int rgbIrHalfHeight_ = 0;
++	Size rgbIrInputSize_;
++	RgbIrToBayer::Order rgbIrOrder_ = RgbIrToBayer::Order::GRBG;
++	/* Source stride is the sensor's; the pre-pass output is half of it. */
++	unsigned int rgbIrSrcStride_ = 0;
++	unsigned int rgbIrHalfStride_ = 0;
+ 	std::unique_ptr<SwStatsCpu> stats_;
+ 	std::vector<uint8_t> lineBuffers_[kMaxLineBuffers];
+ 	unsigned int lineBufferLength_;
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -9,9 +9,14 @@
+  * CPU based debayering class
+  */
+ 
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
+ #include "debayer_cpu.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <stdlib.h>
+ #include <sys/ioctl.h>
+ #include <time.h>
+@@ -19,6 +24,8 @@
+ 
+ #include <linux/dma-buf.h>
+ 
++#include <libcamera/base/utils.h>
++
+ #include <libcamera/formats.h>
+ 
+ #include "libcamera/internal/bayer_format.h"
+@@ -499,6 +506,68 @@
+ 
+ 	inputConfig_.stride = inputCfg.stride;
+ 
++	/*
++	 * Optional RGB-IR pre-pass. This sensor's mosaic is 4x4 with one pixel
++	 * in four infrared; read as 2x2 Bayer the "blue" channel is pure IR
++	 * and "red" interleaves real red with real blue. Convert to a same-size
++	 * Bayer image first so everything below is unchanged.
++	 *
++	 * Gated on an environment variable because there is no way to describe
++	 * an RGB-IR sensor in the V4L2 ABI yet, so libcamera cannot know.
++	 */
++	rgbIr_.reset();
++	if (utils::secure_getenv("LIBCAMERA_RGBIR")) {
++		BayerFormat bayer = BayerFormat::fromPixelFormat(inputCfg.pixelFormat);
++		rgbIrOrder_ = bayer.order == BayerFormat::GBRG
++				    ? RgbIrToBayer::Order::GBRG
++				    : RgbIrToBayer::Order::GRBG;
++		/*
++		 * Override, to settle empirically which order the debayer
++		 * actually wants. The pre-pass output was verified correct when
++		 * decoded as GBRG offline, yet the pipeline renders red as blue,
++		 * so the two disagree about the convention.
++		 */
++		const char *ord = utils::secure_getenv("RGBIR_ORDER");
++		if (ord && !strcmp(ord, "grbg"))
++			rgbIrOrder_ = RgbIrToBayer::Order::GRBG;
++		else if (ord && !strcmp(ord, "gbrg"))
++			rgbIrOrder_ = RgbIrToBayer::Order::GBRG;
++		rgbIrInputSize_ = inputCfg.size;
++		rgbIrSrcStride_ = inputCfg.stride;
++		using Ch = RgbIrToBayer::Channel;
++		static const Ch pattern[16] = {
++			Ch::Green, Ch::Infrared, Ch::Green, Ch::Infrared,
++			Ch::Red,   Ch::Green,    Ch::Blue,  Ch::Green,
++			Ch::Green, Ch::Infrared, Ch::Green, Ch::Infrared,
++			Ch::Blue,  Ch::Green,    Ch::Red,   Ch::Green,
++		};
++		rgbIr_ = std::make_unique<RgbIrToBayer>(pattern, 64, 10);
++		/*
++		 * Infrared subtraction, tunable while it is being judged by eye.
++		 * Sahan ranked IR-2.0 the most colour-accurate and IR-1.0 the
++		 * cleaner compromise on this hardware.
++		 */
++		const char *irs = utils::secure_getenv("RGBIR_IRSUB");
++		if (irs)
++			rgbIr_->setIrSubtract(atof(irs));
++
++		/*
++		 * The tuned coefficient is only right while IR is well exposed,
++		 * and IR is the first channel here to run out of photons. Let it
++		 * shrink toward what is actually measurable; see setIrAdaptive().
++		 * On by default - a fixed coefficient in a dark room was the
++		 * largest single source of grain on this hardware.
++		 */
++		const char *ira = utils::secure_getenv("RGBIR_IRSUB_ADAPT");
++		rgbIr_->setIrAdaptive(!ira || atoi(ira) != 0);
++		rgbIrScratch_.resize(static_cast<size_t>(inputCfg.size.height) *
++				     inputCfg.stride / 2);
++		LOG(Debayer, Info)
++			<< "RGB-IR pre-pass enabled, " << inputCfg.size
++			<< ", emitting "
++			<< (rgbIrOrder_ == RgbIrToBayer::Order::GBRG ? "GBRG" : "GRBG");
++	}
++
+ 	if (outputCfgs.size() != 1) {
+ 		LOG(Debayer, Error)
+ 			<< "Unsupported number of output streams: "
+@@ -543,6 +612,55 @@
+ 	window_.height = outputCfg.size.height;
+ 
+ 	/*
++	 * The RGB-IR pre-pass emits a Bayer image at HALF the input dimensions.
++	 * That is not a compromise: a 4x4 RGB-IR cell holds exactly two red and
++	 * two blue pixels, which is what a 2x2 Bayer cell at half resolution
++	 * needs, so no chroma is discarded. Everything below therefore works on
++	 * half-size geometry - the window has to be rebased onto it, and the
++	 * stride halved, or the debayer walks the wrong rows.
++	 *
++	 * Doing the reduction here rather than downstream is what makes it
++	 * cheap: the debayer, the scaler and the format conversion all then
++	 * handle a quarter of the pixels.
++	 */
++	if (rgbIr_) {
++		const unsigned int halfW = inputCfg.size.width / 2;
++		const unsigned int halfH = inputCfg.size.height / 2;
++		if (outputCfg.size.width > halfW || outputCfg.size.height > halfH) {
++			LOG(Debayer, Error)
++				<< "RGB-IR pre-pass gives " << halfW << "x" << halfH
++				<< ", too small for the requested "
++				<< outputCfg.size;
++			return -EINVAL;
++		}
++		window_.x = ((halfW - outputCfg.size.width) / 2) &
++			    ~(inputConfig_.patternSize.width - 1);
++		window_.y = ((halfH - outputCfg.size.height) / 2) &
++			    ~(inputConfig_.patternSize.height - 1);
++		rgbIrHalfStride_ = inputCfg.stride / 2;
++		inputConfig_.stride = rgbIrHalfStride_;
++		/*
++		 * Only the window is ever read, so only convert that band. Here
++		 * that is 720 of 972 rows: 26% of the conversion, and of the
++		 * denoise below, was being spent on rows the debayer discards.
++		 * Two rows of margin because the debayer interpolates across
++		 * neighbours at the window edge.
++		 */
++		const unsigned int margin = 2;
++		rgbIrRow0_ = window_.y > margin ? window_.y - margin : 0;
++		rgbIrRow1_ = std::min(halfH, window_.y + window_.height + margin);
++		rgbIrHalfHeight_ = halfH;
++		rgbIr_->setActiveRows(rgbIrRow0_, rgbIrRow1_);
++		LOG(Debayer, Info)
++			<< "RGB-IR half-size output " << halfW << "x" << halfH
++			<< ", window " << window_.x << "," << window_.y
++			<< " " << window_.width << "x" << window_.height
++			<< ", converting rows " << rgbIrRow0_ << ".." << rgbIrRow1_
++			<< " (" << (100 * (rgbIrRow1_ - rgbIrRow0_) / halfH)
++			<< "% of the frame)";
++	}
++
++	/*
+ 	 * Set the stats window to the whole processed window. Its coordinates are
+ 	 * relative to the debayered area since debayering passes only the part of
+ 	 * data to be processed to the stats; see SwStatsCpu::setWindow.
+@@ -803,16 +921,69 @@
+ 			const unsigned int redIndex = swapRedBlueGains_ ? 2 : 0;
+ 			const unsigned int greenIndex = 1;
+ 			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
++			/*
++			 * Fade the matrix toward identity as a channel nears
++			 * saturation.
++			 *
++			 * A colour matrix is fitted on unclipped patches and says
++			 * nothing about what to do when an input clips - but the
++			 * arithmetic carries on regardless. With a strong matrix,
++			 * once red and blue pin at maximum while green has not,
++			 * the green row's negative coefficients drive green DOWN
++			 * and the highlight turns MAGENTA. Observed on this
++			 * hardware with a fitted matrix whose green row was
++			 * [-0.364, +1.974, -0.609].
++			 *
++			 * Folding the rolloff into the tables costs nothing per
++			 * pixel. The tables are per input channel, so the fade has
++			 * to key on each channel's own level rather than the
++			 * pixel's overall brightness - which is exactly the right
++			 * thing here anyway: it is a clipped channel that does the
++			 * damage, through its off-diagonal terms. As a channel
++			 * saturates its own diagonal goes to 1 and its
++			 * contribution to the OTHER two goes to 0, so a blown
++			 * channel can no longer drag another one anywhere.
++			 *
++			 * DEFAULT OFF, because keying per channel is wrong and it
++			 * shows. The channels reach the knee at DIFFERENT times, so
++			 * in the shoulder of a highlight the matrix is applied
++			 * asymmetrically. With the shipped matrix, as red saturates
++			 * first its column stops contributing +0.308*R to green and
++			 * stops contributing -0.111*R to blue: green falls, blue
++			 * rises, and a CYAN RING appears around every bright
++			 * source. Reported from use, and the arithmetic agrees.
++			 *
++			 * The fade has to key on the pixel's MAX channel so all
++			 * three columns fade together and no relative shift can
++			 * occur. That is not separable, so it cannot live in these
++			 * per-channel tables - it belongs in STORE_PIXEL, at a real
++			 * per-pixel cost. Left here, off, until that is done.
++			 *
++			 * RGBIR_CCM_HIGHLIGHT sets the knee as a fraction of full
++			 * scale; 0 disables it and restores the plain matrix.
++			 */
++			static const double knee = []() {
++				const char *e = utils::secure_getenv("RGBIR_CCM_HIGHLIGHT");
++				const double v = e ? atof(e) : 0.0;
++				return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
++			}();
++
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+-				red[i].r = std::round(i * params.combinedMatrix[redIndex][0]);
+-				red[i].g = std::round(i * params.combinedMatrix[greenIndex][0]);
+-				red[i].b = std::round(i * params.combinedMatrix[blueIndex][0]);
+-				green[i].r = std::round(i * params.combinedMatrix[redIndex][1]);
+-				green[i].g = std::round(i * params.combinedMatrix[greenIndex][1]);
+-				green[i].b = std::round(i * params.combinedMatrix[blueIndex][1]);
+-				blue[i].r = std::round(i * params.combinedMatrix[redIndex][2]);
+-				blue[i].g = std::round(i * params.combinedMatrix[greenIndex][2]);
+-				blue[i].b = std::round(i * params.combinedMatrix[blueIndex][2]);
++				const double v = static_cast<double>(i) / (kRGBLookupSize - 1);
++				const double t = (knee <= 0.0 || knee >= 1.0 || v <= knee)
++							 ? 0.0
++							 : (v - knee) / (1.0 - knee);
++				const double d = 1.0 - t;
++
++				red[i].r = std::round(i * (params.combinedMatrix[redIndex][0] * d + t));
++				red[i].g = std::round(i * (params.combinedMatrix[greenIndex][0] * d));
++				red[i].b = std::round(i * (params.combinedMatrix[blueIndex][0] * d));
++				green[i].r = std::round(i * (params.combinedMatrix[redIndex][1] * d));
++				green[i].g = std::round(i * (params.combinedMatrix[greenIndex][1] * d + t));
++				green[i].b = std::round(i * (params.combinedMatrix[blueIndex][1] * d));
++				blue[i].r = std::round(i * (params.combinedMatrix[redIndex][2] * d));
++				blue[i].g = std::round(i * (params.combinedMatrix[greenIndex][2] * d));
++				blue[i].b = std::round(i * (params.combinedMatrix[blueIndex][2] * d + t));
+ 				gammaLut_[i] = gammaTable_[i / div];
+ 			}
+ 		}
+@@ -825,9 +996,23 @@
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+ 				/* Apply gamma after gain! */
+ 				const RGB<float> lutGains = (gains * i / div).min(gammaTableSize - 1);
+-				red[i] = gammaTable_[static_cast<unsigned int>(lutGains.r())];
+-				green[i] = gammaTable_[static_cast<unsigned int>(lutGains.g())];
+-				blue[i] = gammaTable_[static_cast<unsigned int>(lutGains.b())];
++				/*
++				 * min() bounds this above but NOT below. A
++				 * negative, NaN or infinite gain casts to a huge
++				 * unsigned and indexes out of bounds, aborting
++				 * the process - which is what crashed v4l2-relayd
++				 * here with SIGABRT and an std::array assertion.
++				 */
++				auto gammaIndex = [gammaTableSize](float v) -> unsigned int {
++					if (!(v >= 0.0f))	/* also catches NaN */
++						return 0;
++					if (v > gammaTableSize - 1)
++						return gammaTableSize - 1;
++					return static_cast<unsigned int>(v);
++				};
++				red[i] = gammaTable_[gammaIndex(lutGains.r())];
++				green[i] = gammaTable_[gammaIndex(lutGains.g())];
++				blue[i] = gammaTable_[gammaIndex(lutGains.b())];
+ 			}
+ 		}
+ 	}
+@@ -868,10 +1053,236 @@
+ 
+ 	stats_->startFrame(frame);
+ 
++	const uint8_t *srcData = in.planes()[0].data();
++	if (rgbIr_) {
++		/*
++		 * RGBIR_SHARPNESS trades green resolution against noise.
++		 *
++		 * convert() averages all eight greens in the 4x4 cell into one
++		 * value and writes it to both green slots of the output quad, so
++		 * luma is flat across the cell. convertSharp() can instead give
++		 * each slot its own 2x2 quadrant mean. That is real detail - at
++		 * output-Nyquist the averaging cancels the signal completely -
++		 * but two samples average less noise than eight, so it is a trade
++		 * and not a free win. Measured on a real frame: 1.0 gives 1.49x
++		 * the vertical detail and 1.43x the noise, leaving detail-to-noise
++		 * flat at ~2.1 throughout. Which end looks better is a judgement
++		 * about the scene, so it is a knob.
++		 *
++		 * 0.0 is bit-for-bit the old behaviour, and is the default so this
++		 * changes nothing until it is asked for.
++		 */
++		static const float sharpness = []() {
++			const char *e = utils::secure_getenv("RGBIR_SHARPNESS");
++			return e ? (float)atof(e) : 0.0f;
++		}();
++		/*
++		 * Lens shading. Intel ships measured per-channel gain tables for
++		 * this exact module in its .aiqb tuning; tools/extract-lens-shading.py
++		 * pulls record 100/28 out into the flat file this reads. Their
++		 * corner gain agrees with a flat field captured here to within
++		 * 8%, from two entirely independent sources.
++		 *
++		 * Only G, R and B are applied. The IR plane needs up to 16x at
++		 * the edge, and since IR is subtracted from the colour channels
++		 * before this point, applying it would multiply IR's noise into
++		 * R, G and B exactly where they are already weakest. Leaving IR
++		 * uncorrected slightly under-subtracts it at the edges, which is
++		 * the harmless direction to be wrong in.
++		 */
++		if (!shadingLoaded_) {
++			shadingLoaded_ = true;
++			const char *path = utils::secure_getenv("RGBIR_SHADING");
++			if (path) {
++				FILE *f = fopen(path, "rb");
++				if (f) {
++					uint16_t hdr[4];
++					if (fread(hdr, 2, 4, f) == 4 && hdr[3] == 4 &&
++					    hdr[0] && hdr[1]) {
++						const size_t n = (size_t)hdr[0] * hdr[1];
++						shadingData_.resize(n * 4);
++						if (fread(shadingData_.data(), 2, n * 4, f) == n * 4) {
++							shadingMap_.width = hdr[0];
++							shadingMap_.height = hdr[1];
++							shadingMap_.one = hdr[2];
++							for (unsigned int c = 0; c < 4; c++)
++								shadingMap_.gains[c] = shadingData_.data() + c * n;
++							/* IR is deliberately not applied - see above. */
++							shadingMap_.gains[RgbIrToBayer::Infrared] = nullptr;
++							shadingValid_ = true;
++							LOG(Debayer, Info)
++								<< "lens shading " << hdr[0] << "x" << hdr[1]
++								<< " loaded from " << path;
++						}
++					}
++					fclose(f);
++				}
++				if (!shadingValid_)
++					LOG(Debayer, Warning)
++						<< "lens shading not loaded from " << path;
++			}
++		}
++
++		/*
++		 * Chroma carries most of the visible noise: measured on a flat
++		 * patch of the finished pipeline, luma sd 5.64 but Cr 10.03. Red
++		 * occupies 2 of the 16 mosaic positions and the colour matrix then
++		 * amplifies that row 1.90x. Smoothing red and blue across
++		 * neighbouring cells is nearly free in perceptual terms - one
++		 * chroma value already covers a 4x4 block of sensor pixels - and
++		 * leaves green, which carries the detail, untouched. Measured in
++		 * the Bayer plane: R sd 13.22 -> 7.06 at radius 1, with green
++		 * unchanged at 13.45.
++		 */
++		static const int chromaBlur = []() {
++			const char *e = utils::secure_getenv("RGBIR_CHROMA_BLUR");
++			return e ? atoi(e) : 1;
++		}();
++		rgbIr_->setChromaBlur(chromaBlur < 0 ? 0 : chromaBlur);
++		rgbIr_->setSharpness(sharpness);
++		const float irBefore = rgbIr_->effectiveIrSubtract();
++		int ret = rgbIr_->convertSharp(srcData,
++					       rgbIrInputSize_.width,
++					       rgbIrInputSize_.height,
++					       rgbIrSrcStride_,
++					       rgbIrScratch_.data(),
++					       rgbIrHalfStride_,
++					       rgbIrOrder_,
++					       shadingValid_ ? &shadingMap_ : nullptr);
++		/*
++		 * Report the adaptive coefficient only when it has actually
++		 * moved, so a steady scene stays quiet and a lighting change is
++		 * visible in the log without a per-frame stream.
++		 */
++		if (std::fabs(rgbIr_->effectiveIrSubtract() - irLoggedIrSub_) > 0.15f) {
++			irLoggedIrSub_ = rgbIr_->effectiveIrSubtract();
++			LOG(Debayer, Info)
++				<< "RGB-IR subtract now " << irLoggedIrSub_
++				<< " (was " << irBefore << ")";
++		}
++
++		if (ret == 0) {
++			/*
++			 * Temporal denoise on the converted mosaic. This sensor
++			 * is noise limited - trading green resolution against
++			 * noise leaves detail-to-noise flat - so the only real
++			 * gain comes from using more photons, and the previous
++			 * frame is the cheapest source of those. Measured on a
++			 * captured sequence: 2.0x less temporal noise at the
++			 * default, up to 3.8x if pushed, against a residual of
++			 * ~3 counts after 100 ms on a scene cut.
++			 *
++			 * RGBIR_DENOISE is the still-area weight: lower
++			 * denoises harder, 1.0 disables entirely.
++			 */
++			static const float dnAlpha = []() {
++				const char *e = utils::secure_getenv("RGBIR_DENOISE");
++				return e ? (float)atof(e) : 0.25f;
++			}();
++			static const int dnThr = []() {
++				const char *e = utils::secure_getenv("RGBIR_DENOISE_THR");
++				return e ? atoi(e) : 40;
++			}();
++			if (dnAlpha < 1.0f) {
++				denoise_.configure(dnAlpha, (uint16_t)dnThr);
++				/*
++				 * Without the geometry the motion decision falls back
++				 * to runs of consecutive samples - horizontal strips a
++				 * fifth of a row wide - and a moving edge leaves seams
++				 * across it that look like interlacing combing.
++				 */
++				denoise_.setGeometry(rgbIrHalfStride_ / 2,
++						     rgbIrRow1_ - rgbIrRow0_);
++				/* Same band as the conversion - the rest is stale
++				 * data that nothing reads. */
++				const size_t pitch = rgbIrHalfStride_ / 2;
++				const size_t off = (size_t)rgbIrRow0_ * pitch;
++				const size_t cnt = (size_t)(rgbIrRow1_ - rgbIrRow0_) * pitch;
++				/*
++				 * Shading runs before this and multiplies the
++				 * corners - noise included - by up to 3.5x, which
++				 * put every corner tile over the motion threshold
++				 * and left it undenoised. Hand the filter the same
++				 * map so it can divide that back out.
++				 */
++				const bool banded = off + cnt <= rgbIrScratch_.size();
++				denoise_.setGainMap(shadingValid_
++						    ? shadingMap_.gains[RgbIrToBayer::Green]
++						    : nullptr,
++						    shadingMap_.width, shadingMap_.height,
++						    shadingMap_.one, pitch,
++						    rgbIrHalfHeight_,
++						    banded ? rgbIrRow0_ : 0);
++				if (banded)
++					denoise_.apply(rgbIrScratch_.data() + off, cnt);
++				else
++					denoise_.apply(rgbIrScratch_.data(),
++						       rgbIrScratch_.size());
++			}
++			srcData = reinterpret_cast<const uint8_t *>(rgbIrScratch_.data());
++			/*
++			 * Dump a LATE frame, not the first. AGC and AWB take
++			 * hundreds of frames to converge on this pipeline, so
++			 * frame 0 is badly exposed and white-balanced - judging
++			 * colour from it compares a settled reference against an
++			 * unsettled capture.
++			 */
++			/*
++			 * Decisive test: overwrite the converted buffer with a
++			 * known GBRG pattern (strong R, mid G, zero B). If the
++			 * output is not obviously red, the debayer is not
++			 * reading this buffer at all and every colour
++			 * comparison so far has been measuring something else.
++			 */
++			if (utils::secure_getenv("RGBIR_TESTPAT")) {
++				uint16_t *d0 = rgbIrScratch_.data();
++				const unsigned int pitch = inputConfig_.stride / 2;
++				for (unsigned int y = 0; y < rgbIrInputSize_.height; y++) {
++					uint16_t *row = d0 + y * pitch;
++					/*
++					 * SPATIAL pattern: red on the left half,
++					 * blue on the right. A uniform colour is
++					 * useless here - grey-world AWB simply
++					 * normalises it away and the output looks
++					 * neutral whether or not the buffer is used.
++					 */
++					const unsigned int half = rgbIrInputSize_.width / 2;
++					for (unsigned int x = 0; x < rgbIrInputSize_.width; x += 2) {
++						const bool left = x < half;
++						if (y % 2 == 0) {
++							row[x] = 300;                      /* G */
++							row[x + 1] = left ? 64 : 900;      /* B */
++						} else {
++							row[x] = left ? 900 : 64;          /* R */
++							row[x + 1] = 300;                  /* G */
++						}
++					}
++				}
++			}
++			static unsigned int frameNo = 0;
++			const char *dp = utils::secure_getenv("RGBIR_DUMP");
++			const char *dn = utils::secure_getenv("RGBIR_DUMP_FRAME");
++			unsigned int want = dn ? (unsigned int)atoi(dn) : 150;
++			if (dp && frameNo++ == want) {
++				FILE *f = fopen(dp, "wb");
++				if (f) {
++					fwrite(rgbIrScratch_.data(), 2,
++					       rgbIrScratch_.size(), f);
++					fclose(f);
++					LOG(Debayer, Info) << "RGB-IR dumped "
++						<< rgbIrScratch_.size() * 2
++						<< " bytes to " << dp;
++				}
++			}
++		}
++		else
++			LOG(Debayer, Error) << "RGB-IR conversion failed: " << ret;
++	}
++
+ 	if (inputConfig_.patternSize.height == 2)
+-		process2(frame, in.planes()[0].data(), out.planes()[0].data());
++		process2(frame, srcData, out.planes()[0].data());
+ 	else
+-		process4(frame, in.planes()[0].data(), out.planes()[0].data());
++		process4(frame, srcData, out.planes()[0].data());
+ 
+ 	metadata.planes()[0].bytesused = out.planes()[0].size();
+ 

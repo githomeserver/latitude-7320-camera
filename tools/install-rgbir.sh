@@ -49,130 +49,55 @@ build)
     [ -d "$ISP" ] || { echo "ERROR: no libcamera source at $SRC" >&2
                        echo "       run tools/build-libcamera.sh build first" >&2; exit 1; }
 
-    echo "== staging the converter =="
-    install -m644 "$REPO/libcamera-rgbir/rgbir_to_bayer.h" "$ISP/"
-    install -m644 "$REPO/libcamera-rgbir/rgbir_to_bayer.cpp" "$ISP/"
+    echo "== staging our sources =="
+    for f in rgbir_to_bayer.h rgbir_to_bayer.cpp temporal_denoise.h temporal_denoise.cpp; do
+        install -m644 "$REPO/libcamera-rgbir/$f" "$ISP/"
+        echo "   $f"
+    done
 
     echo "== patching meson.build =="
     python3 - "$ISP/meson.build" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p).read()
-if "rgbir_to_bayer.cpp" not in s:
-    s = s.replace("    'debayer_cpu.cpp',", "    'debayer_cpu.cpp',\n    'rgbir_to_bayer.cpp',")
+add = [f for f in ("rgbir_to_bayer.cpp", "temporal_denoise.cpp") if f not in s]
+if add:
+    ins = "".join(f"\n    '{f}'," for f in add)
+    s = s.replace("    'debayer_cpu.cpp',", "    'debayer_cpu.cpp'," + ins)
     open(p, "w").write(s)
-    print("   added")
+    print("   added " + ", ".join(add))
 else:
     print("   already there")
 PY
 
+    # debayer_cpu is patched from a diff, not edited in place by string
+    # replacement.
+    #
+    # It used to be a long series of s.replace() calls against a pristine file.
+    # That silently stopped covering the work: six separate changes - the
+    # adaptive IR coefficient, the denoise gain map, the per-band conversion,
+    # the chroma blur, the CCM highlight rolloff and the coefficient logging -
+    # were live in the build tree and reproduced by NONE of them. A fresh clone
+    # built a libcamera with the committed sources present and unused, which is
+    # the worst kind of wrong: the code is in git, so nothing looks missing.
+    #
+    # The patch is generated against the v0.7.0 tag and verified to reproduce
+    # the working tree byte for byte. If libcamera moves on it will fail to
+    # apply, loudly, which is the correct outcome - a silent partial apply is
+    # what got us here.
     echo "== patching debayer_cpu =="
-    python3 - "$ISP/debayer_cpu.h" "$ISP/debayer_cpu.cpp" <<'PY'
-import sys, os, stat
-
-def writable(p):
-    try:
-        os.chmod(p, os.stat(p).st_mode | stat.S_IWUSR)
-    except PermissionError:
-        pass
-
-hp, cp = sys.argv[1], sys.argv[2]
-
-h = open(hp).read()
-if "rgbIr_" not in h:
-    h = h.replace('#include "debayer.h"',
-                  '#include "debayer.h"\n#include "rgbir_to_bayer.h"')
-    # Members. Placed with the other per-configuration state.
-    h = h.replace("\tRectangle window_;",
-                  "\tRectangle window_;\n"
-                  "\t/* RGB-IR pre-pass, enabled by LIBCAMERA_RGBIR. */\n"
-                  "\tstd::unique_ptr<RgbIrToBayer> rgbIr_;\n"
-                  "\tstd::vector<uint16_t> rgbIrScratch_;\n"
-                  "\tSize rgbIrInputSize_;\n"
-                  "\tRgbIrToBayer::Order rgbIrOrder_ = RgbIrToBayer::Order::GRBG;")
-    writable(hp); open(hp, "w").write(h)
-    print("   header patched")
-else:
-    print("   header already patched")
-
-c = open(cp).read()
-if "rgbIr_" not in c:
-    # secure_getenv lives here; do not rely on it arriving transitively.
-    if "base/utils.h" not in c:
-        c = c.replace('#include <libcamera/formats.h>',
-                      '#include <libcamera/base/utils.h>\n\n#include <libcamera/formats.h>')
-    # Construct in configure(), once the input format is known.
-    anchor = "\tinputConfig_.stride = inputCfg.stride;"
-    assert anchor in c, "configure() anchor not found"
-    c = c.replace(anchor, anchor + '''
-
-	/*
-	 * Optional RGB-IR pre-pass. This sensor's mosaic is 4x4 with one pixel
-	 * in four infrared; read as 2x2 Bayer the "blue" channel is pure IR
-	 * and "red" interleaves real red with real blue. Convert to a same-size
-	 * Bayer image first so everything below is unchanged.
-	 *
-	 * Gated on an environment variable because there is no way to describe
-	 * an RGB-IR sensor in the V4L2 ABI yet, so libcamera cannot know.
-	 */
-	rgbIr_.reset();
-	if (utils::secure_getenv("LIBCAMERA_RGBIR")) {
-		BayerFormat bayer = BayerFormat::fromPixelFormat(inputCfg.pixelFormat);
-		rgbIrOrder_ = bayer.order == BayerFormat::GBRG
-				    ? RgbIrToBayer::Order::GBRG
-				    : RgbIrToBayer::Order::GRBG;
-		rgbIrInputSize_ = inputCfg.size;
-		using Ch = RgbIrToBayer::Channel;
-		static const Ch pattern[16] = {
-			Ch::Green, Ch::Infrared, Ch::Green, Ch::Infrared,
-			Ch::Red,   Ch::Green,    Ch::Blue,  Ch::Green,
-			Ch::Green, Ch::Infrared, Ch::Green, Ch::Infrared,
-			Ch::Blue,  Ch::Green,    Ch::Red,   Ch::Green,
-		};
-		rgbIr_ = std::make_unique<RgbIrToBayer>(pattern, 64, 10);
-		rgbIrScratch_.resize(static_cast<size_t>(inputCfg.size.height) *
-				     inputCfg.stride / 2);
-		LOG(Debayer, Info)
-			<< "RGB-IR pre-pass enabled, " << inputCfg.size
-			<< ", emitting "
-			<< (rgbIrOrder_ == RgbIrToBayer::Order::GBRG ? "GBRG" : "GRBG");
-	}''')
-
-    # Use it in process(), between mapping the input and debayering.
-    old = """	stats_->startFrame(frame);
-
-	if (inputConfig_.patternSize.height == 2)
-		process2(frame, in.planes()[0].data(), out.planes()[0].data());
-	else
-		process4(frame, in.planes()[0].data(), out.planes()[0].data());"""
-    new = """	stats_->startFrame(frame);
-
-	const uint8_t *srcData = in.planes()[0].data();
-	if (rgbIr_) {
-		int ret = rgbIr_->convertSameSize(srcData,
-						  rgbIrInputSize_.width,
-						  rgbIrInputSize_.height,
-						  inputConfig_.stride,
-						  rgbIrScratch_.data(),
-						  inputConfig_.stride,
-						  rgbIrOrder_);
-		if (ret == 0)
-			srcData = reinterpret_cast<const uint8_t *>(rgbIrScratch_.data());
-		else
-			LOG(Debayer, Error) << "RGB-IR conversion failed: " << ret;
-	}
-
-	if (inputConfig_.patternSize.height == 2)
-		process2(frame, srcData, out.planes()[0].data());
-	else
-		process4(frame, srcData, out.planes()[0].data());"""
-    assert old in c, "process() anchor not found"
-    c = c.replace(old, new)
-    writable(cp); open(cp, "w").write(c)
-    print("   source patched")
-else:
-    print("   source already patched")
-PY
+    PATCH="$REPO/libcamera-rgbir/debayer_cpu.patch"
+    [ -f "$PATCH" ] || { echo "ERROR: missing $PATCH" >&2; exit 1; }
+    if patch -s -p4 -R --dry-run -d "$ISP" < "$PATCH" >/dev/null 2>&1; then
+        echo "   already applied"
+    elif patch -s -p4 -d "$ISP" < "$PATCH"; then
+        echo "   applied"
+    else
+        echo "ERROR: debayer_cpu.patch did not apply." >&2
+        echo "       The libcamera source is probably not v0.7.0. Regenerate with:" >&2
+        echo "         diff -u <v0.7.0 file> <working file>" >&2
+        exit 1
+    fi
 
     echo
     echo "== building =="
