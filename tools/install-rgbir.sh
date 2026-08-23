@@ -19,7 +19,7 @@
 #
 # Run as root:
 #   sudo ./install-rgbir.sh build     patch the source and rebuild libcamera
-#   sudo ./install-rgbir.sh enable    install it and switch the relay over
+#   sudo ./install-rgbir.sh enable    install it (then install-camera-service.sh)
 #   sudo ./install-rgbir.sh disable   back to the current pipeline, keeps build
 set -eu
 
@@ -36,11 +36,15 @@ RGBIR_CONF="$DROPIN_DIR/50-rgbir.conf"
 # abort part-way - after installing libcamera but before setting VIDEOSRC and
 # the environment - so the pre-pass silently never ran and the diagnostic
 # logged nothing, which looks exactly like the pre-pass being broken.
+# v4l2-relayd is NOT part of this path any more - ov5678-camera.service replaced
+# it, because the relay throttled the pipeline to 1.3 fps. The old config is only
+# consulted by the obsolete enable/disable subcommands below, so nothing here may
+# require it: demanding it up front made this script refuse to run at all on any
+# machine that never had v4l2-relayd installed, which is every fresh machine.
 RELAY_CONF=""
 for c in /etc/v4l2-relayd.d/default.conf /etc/default/v4l2-relayd; do
     [ -f "$c" ] && RELAY_CONF="$c"
 done
-[ -n "$RELAY_CONF" ] || { echo "ERROR: no v4l2-relayd config found" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: must run as root (sudo $0)" >&2; exit 1; }
 
@@ -108,42 +112,35 @@ PY
 
 enable)
     cd "$SRC" && ninja -C build install && ldconfig
-
-    # RGB-IR needs the unbinned mode, and the pre-pass lives in the CPU debayer.
-    mkdir -p "$DROPIN_DIR"
-    cat > "$RGBIR_CONF" <<EOF
-[Service]
-Environment=LIBCAMERA_RGBIR=1
-Environment=LIBCAMERA_SOFTISP_MODE=cpu
-EOF
-
-    cp -a "$RELAY_CONF" "$RELAY_CONF.before-rgbir"
-    cur="$(sed -n 's/^VIDEOSRC=//p' "$RELAY_CONF" | tail -1)"
-    # Capture full resolution, then scale to the relay's output size. Binning
-    # would destroy the mosaic, so the sensor mode is not negotiable.
-    new='libcamerasrc ! video/x-raw,width=2584,height=1944 ! videoscale ! video/x-raw,width=1280,height=720 ! videoconvert'
-    sed -i "s|^VIDEOSRC=.*|VIDEOSRC=$new|" "$RELAY_CONF"
-    echo "  VIDEOSRC=$new"
-    echo "  (previous kept at $RELAY_CONF.before-rgbir)"
-
-    systemctl daemon-reload
-    systemctl restart v4l2-relayd.service
-    sleep 8
-    printf 'service: '
-    systemctl is-active v4l2-relayd@default.service || true
     echo
-    echo "Check the picture. If it is worse or broken: sudo $0 disable"
+    echo "Installed. The pre-pass is gated on LIBCAMERA_RGBIR=1, which"
+    echo "tools/install-camera-service.sh puts in the unit for you:"
+    echo
+    echo "  sudo tools/install-camera-service.sh"
+    echo
+    echo "Nothing here touches v4l2-relayd. ov5678-camera.service replaced it."
     ;;
 
-disable)
-    rm -f "$RGBIR_CONF"
-    [ -f "$RELAY_CONF.before-rgbir" ] && mv "$RELAY_CONF.before-rgbir" "$RELAY_CONF"
+relay-enable|relay-disable)
+    # The original relay path, kept only for a machine still running
+    # v4l2-relayd. On a current install use ov5678-camera.service instead.
+    [ -n "$RELAY_CONF" ] || { echo "ERROR: no v4l2-relayd config found" >&2; exit 1; }
+    if [ "${1:-}" = "relay-enable" ]; then
+        mkdir -p "$DROPIN_DIR"
+        printf '[Service]\nEnvironment=LIBCAMERA_RGBIR=1\nEnvironment=LIBCAMERA_SOFTISP_MODE=cpu\n' > "$RGBIR_CONF"
+        cp -a "$RELAY_CONF" "$RELAY_CONF.before-rgbir"
+        # Full resolution then scale: binning averages infrared in with colour
+        # and destroys the mosaic, so the sensor mode is not negotiable.
+        new='libcamerasrc ! video/x-raw,width=2584,height=1944 ! videoscale ! video/x-raw,width=1280,height=720 ! videoconvert'
+        sed -i "s|^VIDEOSRC=.*|VIDEOSRC=$new|" "$RELAY_CONF"
+        echo "  VIDEOSRC=$new"
+    else
+        rm -f "$RGBIR_CONF"
+        [ -f "$RELAY_CONF.before-rgbir" ] && mv "$RELAY_CONF.before-rgbir" "$RELAY_CONF"
+        echo "  reverted"
+    fi
     systemctl daemon-reload
     systemctl restart v4l2-relayd.service
-    sleep 6
-    printf 'service: '
-    systemctl is-active v4l2-relayd@default.service || true
-    echo "reverted (the patched libcamera stays installed but is inert)"
     ;;
 
 *)

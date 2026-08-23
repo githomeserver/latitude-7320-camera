@@ -508,7 +508,8 @@ tools/check-camera.sh          # expects "Connected 2 cameras" and ov5675 in the
 # 3. patched libcamera into /usr/local; nothing under /usr is touched
 sudo tools/build-libcamera.sh deps
 sudo tools/build-libcamera.sh build
-sudo tools/build-libcamera.sh install
+sudo tools/install-rgbir.sh build       # RGB-IR pre-pass + denoise into the source
+sudo tools/install-rgbir.sh enable      # installs the patched libcamera
 sudo tools/install-tuning.sh
 
 # 4. colour matrix (per-camera - see "Colour tuning" before copying numbers)
@@ -645,6 +646,41 @@ Note the third row: **white balance can read perfectly neutral while every
 colour is wrong.** Grey-world AWB balances to grey whichever way the channels
 are labelled, so `check-colour.sh` passing does not by itself prove the CFA
 phase is right. Confirm that separately with `tools/demosaic-both-ways.sh`.
+
+## Moving to another machine
+
+Clone the repository. Copying `~/Claude Code` wholesale is the wrong move - most
+of it is 11 GB of extracted Windows driver files that nothing in the build reads.
+
+```sh
+git clone https://github.com/githomeserver/latitude-7320-camera.git
+```
+
+Everything the camera needs is in here, including the **measured lens shading
+map** (`data/lens-shading-measured-raw.bin`, which is what
+`install-camera-service.sh` installs by default) and the libcamera changes as a
+patch (`libcamera-rgbir/debayer_cpu.patch`). Then follow [Installing](#installing)
+from the top.
+
+What is NOT in the repository, and is rebuilt by those steps rather than copied:
+
+| lives at | rebuilt by |
+|---|---|
+| `~/.cache/libcamera-build/` | `build-libcamera.sh` + `install-rgbir.sh build` |
+| `/usr/local/lib/.../libcamera*` | `install-rgbir.sh enable` |
+| `/usr/local/share/libcamera/ipa/simple/ov5675.yaml` | `install-tuning.sh`, then `install-ccm.sh` |
+| `/usr/local/share/ov5678/`, `/usr/local/libexec/` | `install-camera-service.sh` |
+| `/etc/systemd/system/ov5678-*.service` | `install-camera-service.sh` |
+| `/etc/modprobe.d/zz-ov5678-loopback.conf` | `install-camera-service.sh` |
+| kernel modules | `dkms-install.sh` |
+
+**The lens shading map is specific to the unit it was measured on.** The
+committed one came from this machine's lens. It will be approximately right on
+another of the same model and wrong on anything else - re-measure with
+`measure-lens-shading.sh --raw` if the corners look off.
+
+**None of this applies to different hardware.** The board data is DMI-guarded on
+`Latitude 7320 Detachable` and does nothing anywhere else, deliberately.
 
 ## Uninstalling
 
