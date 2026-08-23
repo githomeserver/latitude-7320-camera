@@ -200,7 +200,6 @@ on this unit, and a temporal denoise runs on the mosaic.
 | mosaic | 4x4 RGB-IR read as 2x2 Bayer | converted to Bayer up front |
 | white balance (linear R/G) | 0.372 | ~1.00 |
 | red and blue | transposed | correct |
-| colour matrix error (24 patches, linear) | 0.209 | **0.046** |
 | corner brightness (linear, vs centre) | 0.28 | **1.00** |
 | temporal noise, still scene | baseline | **2.0x cleaner**, corners included |
 | blown highlights | went **black** | white |

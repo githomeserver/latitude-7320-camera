@@ -124,6 +124,24 @@ python3 - "$TMP" "$CCM_BLOCK" <<'INSERT'
 import sys
 path, block = sys.argv[1], sys.argv[2]
 lines = open(path).read().split("\n")
+
+# Drop any Ccm block already present. The source is normally the stock tuning
+# file with no Ccm, but it is not guaranteed to be - a previously installed file
+# can be handed back in, and this script has already produced a file with TWO
+# Ccm entries that way, which parses without complaint and silently applies
+# whichever the loader saw last.
+out, i = [], 0
+while i < len(lines):
+    if lines[i].strip() == "- Ccm:":
+        ind = len(lines[i]) - len(lines[i].lstrip())
+        i += 1
+        while i < len(lines) and (not lines[i].strip() or
+              (len(lines[i]) - len(lines[i].lstrip())) > ind):
+            i += 1
+        continue
+    out.append(lines[i])
+    i += 1
+lines = out
 try:
     awb = next(i for i, l in enumerate(lines) if l.strip() == "- Awb:")
 except StopIteration:
@@ -147,6 +165,7 @@ except ImportError:
 d = yaml.safe_load(open(sys.argv[1]))
 algs = [list(a)[0] for a in d["algorithms"]]
 assert "Ccm" in algs, "Ccm missing"
+assert algs.count("Ccm") == 1, f"{algs.count('Ccm')} Ccm entries, expected exactly one"
 assert algs.index("Ccm") > algs.index("Awb"), \
     "Ccm must come after Awb, or the matrix multiplies in the wrong order"
 if "Adjust" in algs:

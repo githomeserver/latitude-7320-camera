@@ -224,26 +224,98 @@ void TemporalDenoise::apply(uint16_t *frame, size_t count)
 		return m >= thr ? 256 : aFix + (256 - aFix) * m / thr;
 	};
 
-	for (unsigned int b = 0; b < blocks; b++) {
-		const int32_t w = weightOf(b);
-		if (w > 200)
-			moving++;
+	if (tiled) {
+		/*
+		 * Interpolate the weight between tile centres rather than
+		 * stepping it at tile edges.
+		 *
+		 * One weight per 32x32 tile makes the tile itself visible: when
+		 * something moves, neighbouring tiles average by different
+		 * amounts and the seams between them read as SQUARES drifting
+		 * over the picture. It is the same failure as the horizontal
+		 * combing that square tiles replaced - the artefact follows
+		 * whatever shape the motion decision is quantised to, so the fix
+		 * is to stop it being quantised at all on the output side.
+		 *
+		 * The decision stays per tile, which is what makes it robust
+		 * against noise; only its APPLICATION is smoothed. A pixel takes
+		 * a bilinear blend of the four tile weights around it, so the
+		 * weight field is continuous and no edge exists to see.
+		 */
+		weights_.resize(blocks);
+		for (unsigned int b = 0; b < blocks; b++) {
+			weights_[b] = weightOf(b);
+			if (weights_[b] > 200)
+				moving++;
+		}
 
-		if (tiled) {
-			unsigned int x0, x1, y0, y1;
-			tileBounds(b, x0, x1, y0, y1);
-			for (unsigned int y = y0; y < y1; y++) {
-				const size_t row = (size_t)y * width_;
-				for (unsigned int x = x0; x < x1; x++) {
-					const size_t i = row + x;
-					const int32_t cur = frame[i], prev = history_[i];
+		/*
+		 * Walked in spans rather than per pixel. The obvious form - work
+		 * out which tiles a pixel sits between, and interpolate - costs
+		 * two signed divisions and two clamps per pixel, and measured
+		 * 79.7 ms a frame against 26: 12 fps. Between two tile centres
+		 * the pair of tiles is fixed and the blend advances by a
+		 * constant, so the whole thing reduces to one add per pixel.
+		 */
+		weights_.resize(blocks);
+		for (unsigned int b = 0; b < blocks; b++) {
+			weights_[b] = weightOf(b);
+			if (weights_[b] > 200)
+				moving++;
+		}
+
+		const int32_t half = kTile / 2;
+		vcol_.resize(tx);
+
+		for (unsigned int y = 0; y < height_; y++) {
+			const int32_t gy = (int32_t)y - half;
+			const int32_t by0 = gy < 0 ? 0 : std::min((int32_t)ty - 1, gy / (int32_t)kTile);
+			const int32_t by1 = std::min((int32_t)ty - 1, by0 + 1);
+			const int32_t fy = gy < 0 ? 0 : gy - by0 * (int32_t)kTile;
+			const int32_t *rowA = &weights_[(size_t)by0 * tx];
+			const int32_t *rowB = &weights_[(size_t)by1 * tx];
+
+			/* Vertical blend once per tile column: w * kTile. */
+			for (unsigned int bx = 0; bx < tx; bx++)
+				vcol_[bx] = rowA[bx] * (kTile - fy) + rowB[bx] * fy;
+
+			uint16_t *f = frame + (size_t)y * width_;
+			uint16_t *h = history_.data() + (size_t)y * width_;
+
+			auto run = [&](unsigned int x0, unsigned int x1, int32_t acc,
+				       int32_t step) {
+				for (unsigned int x = x0; x < x1; x++, acc += step) {
+					/* acc is w * kTile * kTile; kTile^2 = 1024. */
+					const int32_t w = acc >> 10;
+					const int32_t cur = f[x], prev = h[x];
 					const int32_t out = prev + ((cur - prev) * w >> 8);
 					const uint16_t v = (uint16_t)(out < 0 ? 0 : out);
-					frame[i] = v;
-					history_[i] = v;
+					f[x] = v;
+					h[x] = v;
 				}
+			};
+
+			/* Before the first tile centre the weight is simply tile 0's. */
+			const unsigned int lead = std::min((unsigned int)half, width_);
+			run(0, lead, vcol_[0] * kTile, 0);
+
+			for (unsigned int bx = 0; bx + 1 < tx; bx++) {
+				const unsigned int x0 = half + bx * kTile;
+				if (x0 >= width_)
+					break;
+				const unsigned int x1 = std::min(x0 + kTile, width_);
+				run(x0, x1, vcol_[bx] * kTile, vcol_[bx + 1] - vcol_[bx]);
 			}
-		} else {
+
+			/* And after the last centre, the last tile's. */
+			const unsigned int tail = std::min(width_, half + (tx - 1) * kTile);
+			run(tail, width_, vcol_[tx - 1] * kTile, 0);
+		}
+	} else {
+		for (unsigned int b = 0; b < blocks; b++) {
+			const int32_t w = weightOf(b);
+			if (w > 200)
+				moving++;
 			const size_t s0 = (size_t)b * kBlock;
 			const size_t s1 = std::min(s0 + kBlock, count);
 			for (size_t i = s0; i < s1; i++) {

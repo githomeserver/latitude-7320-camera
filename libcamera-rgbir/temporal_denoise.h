@@ -121,6 +121,10 @@ private:
 	std::vector<uint16_t> history_;
 	std::vector<uint16_t> blockMotion_;
 	std::vector<uint16_t> scratch_;
+	/* Per-tile blend weight, 0-256, blended bilinearly across the frame. */
+	std::vector<int32_t> weights_;
+	/* Vertically blended weights, one per tile column, rebuilt each row. */
+	std::vector<int32_t> vcol_;
 	/* Per-tile gain, 8.8 fixed point, 256 = unity. Rebuilt only on change. */
 	std::vector<uint16_t> tileScale_;
 	const uint16_t *gainMap_ = nullptr;

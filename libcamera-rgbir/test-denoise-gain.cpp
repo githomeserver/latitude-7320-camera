@@ -15,6 +15,7 @@
 
 #include "temporal_denoise.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <random>
@@ -183,6 +184,74 @@ int main()
 		snprintf(buf, sizeof(buf), "bg %.0f -> %.0f, object is %.0f", bg, got, want);
 		check("moving object in the corner is not smeared away",
 		      got > bg + (want - bg) * 0.85f, buf);
+	}
+
+	/*
+	 * The weight field must be CONTINUOUS.
+	 *
+	 * The motion decision is per tile, which is what makes it robust, but if
+	 * the resulting weight is applied per tile then neighbouring tiles
+	 * average by different amounts and the tile grid itself becomes visible
+	 * as squares crawling over anything that moves. That was reported from
+	 * use, and it is the same artefact as the horizontal combing that square
+	 * tiles were introduced to fix - it follows whatever shape the decision
+	 * is quantised to.
+	 *
+	 * The weight is recoverable exactly. After a frame is processed the
+	 * history equals the output, so presenting out + d and measuring
+	 * (out2 - out) / d gives back w/256 per pixel.
+	 */
+	printf("\nweight field\n\n");
+	{
+		TemporalDenoise dn;
+		dn.configure(0.35f, 40);
+		dn.setGeometry(W, H);
+		std::mt19937 rng(4242);
+		std::vector<uint16_t> f((size_t)W * H);
+		for (int i = 0; i < 30; i++) {
+			makeFrame(f, rng, -1, 0);
+			dn.apply(f.data(), f.size());
+		}
+		const std::vector<uint16_t> base = f;
+
+		/* Big step on the left half, small on the right: two weights. */
+		for (unsigned int y = 0; y < H; y++)
+			for (unsigned int x = 0; x < W; x++) {
+				const int d = x < W / 2 ? 200 : 30;
+				f[(size_t)y * W + x] =
+					(uint16_t)std::min(65535, base[(size_t)y * W + x] + d);
+			}
+		dn.apply(f.data(), f.size());
+
+		/* Weight profile along x, averaged down the rows to kill noise. */
+		std::vector<double> prof(W, 0.0);
+		for (unsigned int x = 0; x < W; x++) {
+			double acc = 0;
+			for (unsigned int y = 0; y < H; y++) {
+				const size_t i = (size_t)y * W + x;
+				acc += (double)(f[i] - base[i]) / (x < W / 2 ? 200 : 30);
+			}
+			prof[x] = acc / H;
+		}
+
+		double span = 0, jump = 0;
+		unsigned int at = 0;
+		for (unsigned int x = 1; x < W; x++) {
+			span = std::max(span, std::fabs(prof[x] - prof[0]));
+			const double j = std::fabs(prof[x] - prof[x - 1]);
+			if (j > jump) { jump = j; at = x; }
+		}
+		char buf[96];
+		snprintf(buf, sizeof(buf), "largest step %.3f at x=%u, total swing %.3f",
+			 jump, at, span);
+		/*
+		 * Across a 32 pixel tile the weight may move by the whole swing,
+		 * so a smooth ramp steps about swing/32 per pixel. A per-tile
+		 * application steps by the WHOLE swing at one boundary. An eighth
+		 * separates the two by a wide margin either way.
+		 */
+		check("weight is blended, not stepped at tile edges",
+		      jump < span / 8.0, buf);
 	}
 
 	printf("\n%s\n", failures ? "FAILURES" : "all checks passed");
