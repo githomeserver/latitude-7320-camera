@@ -1,5 +1,5 @@
---- a/src/libcamera/software_isp/debayer_cpu.h
-+++ b/src/libcamera/software_isp/debayer_cpu.h
+--- a/src/libcamera/software_isp/debayer_cpu.h	2026-01-29 23:17:26.000000000 +1100
++++ b/src/libcamera/software_isp/debayer_cpu.h	2026-08-23 18:21:56.890045534 +1000
 @@ -23,6 +23,8 @@
  #include "libcamera/internal/software_isp/swstats_cpu.h"
  
@@ -9,7 +9,25 @@
  
  namespace libcamera {
  
-@@ -141,6 +143,26 @@
+@@ -135,12 +137,44 @@
+ 	LookupTable gammaLut_;
+ 	bool ccmEnabled_;
+ 	DebayerParams params_;
++	/*
++	 * Max-channel CCM highlight rolloff. Near saturation the colour matrix
++	 * is faded toward the white-balanced (no CCM) value so a clipped
++	 * highlight stays white instead of going magenta. Keyed on the pixel's
++	 * MAX raw channel in STORE_PIXEL; see updateLookupTables(). The knee is
++	 * a raw LUT level (0-255); 0 disables the rolloff.
++	 */
++	float rolloffKnee_ = 0.0f;
++	/* White-balance gains for the three STORE_PIXEL output bytes (B, G, R). */
++	float rolloffGainB_ = 1.0f;
++	float rolloffGainG_ = 1.0f;
++	float rolloffGainR_ = 1.0f;
+ 
+ 	debayerFn debayer0_;
+ 	debayerFn debayer1_;
  	debayerFn debayer2_;
  	debayerFn debayer3_;
  	Rectangle window_;
@@ -36,8 +54,8 @@
  	std::unique_ptr<SwStatsCpu> stats_;
  	std::vector<uint8_t> lineBuffers_[kMaxLineBuffers];
  	unsigned int lineBufferLength_;
---- a/src/libcamera/software_isp/debayer_cpu.cpp
-+++ b/src/libcamera/software_isp/debayer_cpu.cpp
+--- a/src/libcamera/software_isp/debayer_cpu.cpp	2026-01-29 23:17:26.000000000 +1100
++++ b/src/libcamera/software_isp/debayer_cpu.cpp	2026-08-23 18:36:14.158264565 +1000
 @@ -9,9 +9,14 @@
   * CPU based debayering class
   */
@@ -62,7 +80,45 @@
  #include <libcamera/formats.h>
  
  #include "libcamera/internal/bayer_format.h"
-@@ -499,6 +506,68 @@
+@@ -73,9 +80,34 @@
+ 		const CcmColumn &blue = blueCcm_[b_];   \
+ 		const CcmColumn &green = greenCcm_[g_]; \
+ 		const CcmColumn &red = redCcm_[r_];     \
+-		GAMMA(blue.b + green.b + red.b);        \
+-		GAMMA(blue.g + green.g + red.g);        \
+-		GAMMA(blue.r + green.r + red.r);        \
++		if (rolloffKnee_ > 0.0f) {              \
++			/* Fade toward the white-balanced \
++			 * (no CCM) value as the pixel's  \
++			 * MAX raw channel nears        \
++			 * saturation, so a clipped     \
++			 * highlight degrades to white  \
++			 * instead of magenta. All three\
++			 * columns fade together - keyed\
++			 * on the max, not each channel \
++			 * - so no cyan ring. See      \
++			 * updateLookupTables().        \
++			 */                              \
++			const int m = std::max({ (b_), (g_), (r_) }); \
++			const float full = kRGBLookupSize - 1; \
++			const float t = (float)m <= rolloffKnee_ ? 0.0f : \
++				((float)m - rolloffKnee_) / (full - rolloffKnee_); \
++			const float d = 1.0f - t;           \
++			const float wbB = rolloffGainB_ * (b_); \
++			const float wbG = rolloffGainG_ * (g_); \
++			const float wbR = rolloffGainR_ * (r_); \
++			GAMMA(static_cast<int>(std::lround((blue.b + green.b + red.b) * d + wbB * t))); \
++			GAMMA(static_cast<int>(std::lround((blue.g + green.g + red.g) * d + wbG * t))); \
++			GAMMA(static_cast<int>(std::lround((blue.r + green.r + red.r) * d + wbR * t))); \
++		} else {                                \
++			GAMMA(blue.b + green.b + red.b);\
++			GAMMA(blue.g + green.g + red.g);\
++			GAMMA(blue.r + green.r + red.r);\
++		}                                       \
+ 	} else {                                        \
+ 		*dst++ = blue_[b_];                     \
+ 		*dst++ = green_[g_];                    \
+@@ -499,6 +531,68 @@
  
  	inputConfig_.stride = inputCfg.stride;
  
@@ -131,7 +187,7 @@
  	if (outputCfgs.size() != 1) {
  		LOG(Debayer, Error)
  			<< "Unsupported number of output streams: "
-@@ -543,6 +612,55 @@
+@@ -543,6 +637,55 @@
  	window_.height = outputCfg.size.height;
  
  	/*
@@ -187,57 +243,82 @@
  	 * Set the stats window to the whole processed window. Its coordinates are
  	 * relative to the debayered area since debayering passes only the part of
  	 * data to be processed to the stats; see SwStatsCpu::setWindow.
-@@ -803,16 +921,69 @@
+@@ -753,8 +896,13 @@
+ void DebayerCpu::updateGammaTable(DebayerParams &params)
+ {
+ 	const RGB<float> blackLevel = params.blackLevel;
+-	/* Take let's say the green channel black level */
+-	const unsigned int blackIndex = blackLevel[1] * gammaTable_.size();
++	/* Take let's say the green channel black level. With a CCM the matrix is
++	 * already applied to black-level-subtracted data (see updateLookupTables),
++	 * so the pedestal must not be crushed here as well - that would
++	 * double-subtract and clip the shadows. The black floor is only needed for
++	 * the plain-gains path, which feeds the raw pedestal straight into gamma. */
++	const unsigned int blackIndex = ccmEnabled_ ? 0 :
++					blackLevel[1] * gammaTable_.size();
+ 	const float gamma = params.gamma;
+ 	const float contrastExp = params.contrastExp;
+ 
+@@ -795,6 +943,41 @@
+ 	const unsigned int gammaTableSize = gammaTable_.size();
+ 	const double div = static_cast<double>(kRGBLookupSize) / gammaTableSize;
+ 	if (ccmEnabled_) {
++		/*
++		 * Max-channel CCM highlight rolloff, applied per pixel in
++		 * STORE_PIXEL. A colour matrix is fitted on unclipped patches and
++		 * says nothing about what happens when an input clips - but the
++		 * arithmetic carries on regardless. With a strong matrix, once the
++		 * sensor's most sensitive channel (green) clips while white balance
++		 * pins red and blue at maximum, the green row's negative
++		 * coefficients drive green DOWN and the highlight turns MAGENTA.
++		 * Observed on this hardware with Intel's matrices, whose green
++		 * off-diagonals reach -0.8.
++		 *
++		 * Near saturation the whole matrix is faded toward the
++		 * white-balanced (no CCM) value, so a clipped highlight degrades
++		 * to white instead of magenta. The fade is keyed on the pixel's
++		 * MAX raw channel so all three columns fade together; keying per
++		 * channel fades them at different times and put a CYAN RING around
++		 * every bright source. That is not separable, so it lives in
++		 * STORE_PIXEL, not in these per-channel tables.
++		 *
++		 * RGBIR_CCM_HIGHLIGHT sets the knee as a fraction of full scale;
++		 * 0 disables the rolloff and restores the plain matrix.
++		 */
++		static const float kneeFrac = []() {
++			const char *e = utils::secure_getenv("RGBIR_CCM_HIGHLIGHT");
++			const float v = e ? atof(e) : 0.85f;
++			return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
++		}();
++		rolloffKnee_ = kneeFrac * (kRGBLookupSize - 1);
++		/* White-balance gains for the three output bytes (B, G, R), matching
++		 * the R/B swap the plain-gains path uses so the fade target equals
++		 * that path's linear value. */
++		rolloffGainB_ = swapRedBlueGains_ ? params.gains.r() : params.gains.b();
++		rolloffGainG_ = params.gains.g();
++		rolloffGainR_ = swapRedBlueGains_ ? params.gains.b() : params.gains.r();
++
+ 		if (gammaUpdateNeeded ||
+ 		    matrixChanged(params.combinedMatrix, params_.combinedMatrix)) {
+ 			auto &red = swapRedBlueGains_ ? blueCcm_ : redCcm_;
+@@ -803,16 +986,33 @@
  			const unsigned int redIndex = swapRedBlueGains_ ? 2 : 0;
  			const unsigned int greenIndex = 1;
  			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
-+			/*
-+			 * Fade the matrix toward identity as a channel nears
-+			 * saturation.
-+			 *
-+			 * A colour matrix is fitted on unclipped patches and says
-+			 * nothing about what to do when an input clips - but the
-+			 * arithmetic carries on regardless. With a strong matrix,
-+			 * once red and blue pin at maximum while green has not,
-+			 * the green row's negative coefficients drive green DOWN
-+			 * and the highlight turns MAGENTA. Observed on this
-+			 * hardware with a fitted matrix whose green row was
-+			 * [-0.364, +1.974, -0.609].
-+			 *
-+			 * Folding the rolloff into the tables costs nothing per
-+			 * pixel. The tables are per input channel, so the fade has
-+			 * to key on each channel's own level rather than the
-+			 * pixel's overall brightness - which is exactly the right
-+			 * thing here anyway: it is a clipped channel that does the
-+			 * damage, through its off-diagonal terms. As a channel
-+			 * saturates its own diagonal goes to 1 and its
-+			 * contribution to the OTHER two goes to 0, so a blown
-+			 * channel can no longer drag another one anywhere.
-+			 *
-+			 * DEFAULT OFF, because keying per channel is wrong and it
-+			 * shows. The channels reach the knee at DIFFERENT times, so
-+			 * in the shoulder of a highlight the matrix is applied
-+			 * asymmetrically. With the shipped matrix, as red saturates
-+			 * first its column stops contributing +0.308*R to green and
-+			 * stops contributing -0.111*R to blue: green falls, blue
-+			 * rises, and a CYAN RING appears around every bright
-+			 * source. Reported from use, and the arithmetic agrees.
-+			 *
-+			 * The fade has to key on the pixel's MAX channel so all
-+			 * three columns fade together and no relative shift can
-+			 * occur. That is not separable, so it cannot live in these
-+			 * per-channel tables - it belongs in STORE_PIXEL, at a real
-+			 * per-pixel cost. Left here, off, until that is done.
-+			 *
-+			 * RGBIR_CCM_HIGHLIGHT sets the knee as a fraction of full
-+			 * scale; 0 disables it and restores the plain matrix.
-+			 */
-+			static const double knee = []() {
-+				const char *e = utils::secure_getenv("RGBIR_CCM_HIGHLIGHT");
-+				const double v = e ? atof(e) : 0.0;
-+				return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
-+			}();
 +
++			/*
++			 * The matrix must act on black-level-subtracted data, not on
++			 * the raw pedestal. The sensor's ~64-count pedestal, amplified
++			 * by the white-balance gains and the matrix's negative
++			 * off-diagonals, lifts red and blue above the gamma black
++			 * floor while green stays under it - magenta shadows. Subtract
++			 * the black level in LUT units (blackLevel is a 0..1 fraction
++			 * of full scale).
++			 */
++			const double blackR = params.blackLevel[redIndex] * kRGBLookupSize;
++			const double blackG = params.blackLevel[greenIndex] * kRGBLookupSize;
++			const double blackB = params.blackLevel[blueIndex] * kRGBLookupSize;
++			const double scale = 1.0 / (1.0 - params.blackLevel[greenIndex]);
  			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
 -				red[i].r = std::round(i * params.combinedMatrix[redIndex][0]);
 -				red[i].g = std::round(i * params.combinedMatrix[greenIndex][0]);
@@ -248,25 +329,22 @@
 -				blue[i].r = std::round(i * params.combinedMatrix[redIndex][2]);
 -				blue[i].g = std::round(i * params.combinedMatrix[greenIndex][2]);
 -				blue[i].b = std::round(i * params.combinedMatrix[blueIndex][2]);
-+				const double v = static_cast<double>(i) / (kRGBLookupSize - 1);
-+				const double t = (knee <= 0.0 || knee >= 1.0 || v <= knee)
-+							 ? 0.0
-+							 : (v - knee) / (1.0 - knee);
-+				const double d = 1.0 - t;
-+
-+				red[i].r = std::round(i * (params.combinedMatrix[redIndex][0] * d + t));
-+				red[i].g = std::round(i * (params.combinedMatrix[greenIndex][0] * d));
-+				red[i].b = std::round(i * (params.combinedMatrix[blueIndex][0] * d));
-+				green[i].r = std::round(i * (params.combinedMatrix[redIndex][1] * d));
-+				green[i].g = std::round(i * (params.combinedMatrix[greenIndex][1] * d + t));
-+				green[i].b = std::round(i * (params.combinedMatrix[blueIndex][1] * d));
-+				blue[i].r = std::round(i * (params.combinedMatrix[redIndex][2] * d));
-+				blue[i].g = std::round(i * (params.combinedMatrix[greenIndex][2] * d));
-+				blue[i].b = std::round(i * (params.combinedMatrix[blueIndex][2] * d + t));
++				const double r = (i - blackR) * scale;
++				const double g = (i - blackG) * scale;
++				const double b = (i - blackB) * scale;
++				red[i].r = std::round(r * params.combinedMatrix[redIndex][0]);
++				red[i].g = std::round(r * params.combinedMatrix[greenIndex][0]);
++				red[i].b = std::round(r * params.combinedMatrix[blueIndex][0]);
++				green[i].r = std::round(g * params.combinedMatrix[redIndex][1]);
++				green[i].g = std::round(g * params.combinedMatrix[greenIndex][1]);
++				green[i].b = std::round(g * params.combinedMatrix[blueIndex][1]);
++				blue[i].r = std::round(b * params.combinedMatrix[redIndex][2]);
++				blue[i].g = std::round(b * params.combinedMatrix[greenIndex][2]);
++				blue[i].b = std::round(b * params.combinedMatrix[blueIndex][2]);
  				gammaLut_[i] = gammaTable_[i / div];
  			}
  		}
-@@ -825,9 +996,23 @@
+@@ -825,9 +1025,23 @@
  			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
  				/* Apply gamma after gain! */
  				const RGB<float> lutGains = (gains * i / div).min(gammaTableSize - 1);
@@ -293,7 +371,7 @@
  			}
  		}
  	}
-@@ -868,10 +1053,236 @@
+@@ -868,10 +1082,236 @@
  
  	stats_->startFrame(frame);
  

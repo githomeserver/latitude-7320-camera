@@ -25,7 +25,7 @@
 # the camera released when unused, keep the relay and accept the frame rate.
 #
 # Run as root:  sudo ./install-camera-service.sh          install and start
-#               sudo ./install-camera-service.sh revert   back to v4l2-relayd
+#               sudo ./install-camera-service.sh revert   disable the camera pipeline
 
 set -eu
 
@@ -78,6 +78,15 @@ DENOISE_THR="${DENOISE_THR:-40}"
 # already one value per 4x4 sensor block, so smoothing them costs almost nothing
 # visible while halving the noise that dominates the picture. Green is untouched.
 CHROMA_BLUR="${CHROMA_BLUR:-1}"
+
+# CCM highlight rolloff. Near saturation the colour matrix is faded toward the
+# white-balanced (no CCM) value so a clipped highlight stays white instead of
+# going magenta. This is the max-channel fade in debayer_cpu's STORE_PIXEL,
+# keyed on the pixel's brightest raw channel so all three matrix columns fade
+# together (no cyan ring). The value is the knee as a fraction of full scale:
+# lower fades earlier (less magenta, highlights a touch washed), higher fades
+# later (more colour in highlights, more magenta). 0 disables the rolloff.
+CCM_HIGHLIGHT="${CCM_HIGHLIGHT:-0.85}"
 
 # Lens shading. Path to a per-channel gain map, or empty to disable. The map
 # must be measured from RAW mosaic frames over the FULL 4:3 sensor field, which
@@ -179,15 +188,13 @@ if [ "${1:-install}" = "revert" ]; then
     systemctl disable --now ov5678-camera.service 2>/dev/null || true
     rm -f "$UNIT"
     systemctl daemon-reload
-    systemctl start v4l2-relayd.service 2>/dev/null || true
-    systemctl start v4l2-relayd@default.service 2>/dev/null || true
-    echo "reverted to v4l2-relayd"
+    echo "reverted: the on-demand camera pipeline is disabled and removed"
     exit 0
 fi
 
 echo "== stopping v4l2-relayd =="
 systemctl disable --now v4l2-relayd@default.service 2>/dev/null || true
-systemctl stop v4l2-relayd.service 2>/dev/null || true
+systemctl stop ov5678-ondemand.service 2>/dev/null || true
 
 LIBEXEC=/usr/local/libexec
 SHAREDIR=/usr/local/share/ov5678
@@ -218,6 +225,7 @@ Environment=RGBIR_SHARPNESS=$SHARPNESS
 Environment=RGBIR_DENOISE=$DENOISE
 Environment=RGBIR_DENOISE_THR=$DENOISE_THR
 Environment=RGBIR_CHROMA_BLUR=$CHROMA_BLUR
+Environment=RGBIR_CCM_HIGHLIGHT=$CCM_HIGHLIGHT
 Environment="RGBIR_SHADING=$SHADING"
 Environment=LIBCAMERA_SOFTISP_MODE=cpu
 ExecStart=/usr/bin/gst-launch-1.0 -q libcamerasrc exposure-value=$EV$SAT_PROP ! video/x-raw,width=$WIDTH,height=$HEIGHT ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK

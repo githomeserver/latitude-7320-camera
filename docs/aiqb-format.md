@@ -124,8 +124,10 @@ is 55%.
   which suggests the split between preamble and plane header is not exactly
   right even though the total arithmetic works.
 - **Colour matrices** are record 100/25, `cmc_advanced_color_matrix_correction`:
-  `num_light_srcs`, `num_sectors`, then per light source a `traditional` matrix
-  plus an array of per-hue-sector matrices. Not yet extracted.
+  `num_light_srcs`, `num_sectors`, then a `hue_of_sectors` table, then per light
+  source a `traditional` matrix plus an array of per-hue-sector matrices.
+  **Extracted 2026-08-23 by `tools/extract-ccm.py`** - see
+  [docs/intel-ccm-ov5678.md](intel-ccm-ov5678.md).
 
 ## Record 101/27 - infrared_correction (decoded)
 
@@ -168,73 +170,17 @@ the `.aiqb` files themselves to this repository, and do not paste extracted
 tables into GPL sources without thinking about provenance first.
 
 
-## Full-resolution throughput (measured 2026-08-09)
+## Throughput: the half-size pre-pass
 
-RGB-IR requires the unbinned mode, which is 4x the pixels we run today. It is
-not a bottleneck:
+The full-resolution CPU pipeline was tried and is **not viable** - about 1.1 fps
+sustained, because the pre-pass plus debayer plus 720p scale on 5 MP misses the
+frame deadline. Earlier benchmark numbers here (29.95 fps at 2584x1944) were
+measured with `fakesink` and were wrong: they excluded the relay, the format
+conversion and the loopback.
 
-```
-GPU  1280x720    30.69 fps      CPU  1280x720    29.96 fps
-GPU  2560x1600   29.96 fps      CPU  2560x1600   29.96 fps
-GPU  2584x1944   29.95 fps      CPU  2584x1944   29.95 fps
-```
-
-Measured from the slope of a 40-buffer and a 160-buffer run so pipeline
-startup cancels out. The sensor runs at 30 fps and nothing downstream limits
-it, so **full resolution costs no frame rate**.
-
-Note libcamera's maximum is **2584x1944**, not the sensor's 2592x1944 -
-`(2x2)-(2584x1944)/(+2,+2)`. Requesting 2592 is rejected outright with
-`not-negotiated`. The 8-column crop preserves the 4x4 mosaic phase.
-
-The CPU column is not trusted: it contradicts an earlier in-service
-measurement of 12.6 ms/frame at 1296x972, which would predict ~20 fps at 5 MP.
-The benchmark uses fakesink and so excludes the relay's v4l2sink, conversion
-and loopback costs. Unexplained; the GPU figure is the one the plan rests on.
-
-## First integration attempt failed (2026-08-09)
-
-`tools/install-rgbir.sh` builds and installs cleanly, but the resulting
-picture was **worse**: more magenta, plus lag, black frames and white frames.
-Reverted with `install-rgbir.sh disable`, which restored the working pipeline.
-Two separate problems, and they need separating before another attempt.
-
-**1. Performance, and this one was predicted.** The CPU now does a 5 MP
-pre-pass *and* a 5 MP debayer *and* a 5 MP to 720p scale, every frame. The
-lag, black frames and white frames are all consistent with the pipeline
-missing its deadline and frames being dropped or delivered incomplete.
-
-`tools/bench-fullres.sh` reported the CPU debayer managing 29.95 fps at
-2584x1944, which was recorded at the time as **not trusted** - it contradicts
-an in-service measurement of 12.6 ms/frame at 1296x972, which predicts ~20 fps
-at 5 MP before any pre-pass is added. That scepticism looks justified. The
-benchmark uses `fakesink`, so it excludes the relay's v4l2sink, the format
-conversion and the loopback, and it excludes the scaler this configuration
-adds.
-
-**Consequence: the pre-pass belongs in the EGL shader, not the CPU debayer.**
-The GPU path is what runs today at 30 fps and it is where the work has to go.
-That is a bigger change than hooking `DebayerCpu::process()` - the shader
-reads the mosaic directly, so it means a new fragment shader variant rather
-than a buffer transform - but the CPU route appears to be a dead end on this
-hardware.
-
-**2. Magenta, cause not established.** Magenta means green low relative to red
-and blue. Candidates, none yet tested:
-
-- **Crop phase.** libcamera's stream is 2584x1944 against the sensor's
-  2592x1944, so it crops 8 columns. The conversion runs from the buffer origin
-  over `inputCfg.size`, but `DebayerCpu::process2()` then offsets into that
-  buffer by `window_.x/y`. If `window_.x` is not a multiple of 4 the 4x4 cell
-  phase shifts under the debayer and the channel assignment is wrong. This is
-  the first thing to check - print `window_` and `inputCfg.size` and see.
-- **Bayer order.** The code derives GBRG from the declared `SGBRG10`. If the
-  emitted order is wrong, red and blue transpose - though that would look
-  swapped rather than magenta.
-- **Black level.** Hardcoded 64 in the pre-pass. Wrong here would shift all
-  three channels, but not obviously toward magenta.
-
-**Not yet ruled out and worth checking first**, because it is cheap: whether
-the `LIBCAMERA_RGBIR` log line appeared at all. If the pre-pass never ran,
-the magenta is simply what full-resolution capture looks like through the
-existing 2x2 misreading, and only the performance problem is real.
+The working design is a **half-size pre-pass**: a 4x4 RGB-IR cell holds exactly
+two red and two blue pixels, and a 2x2 Bayer cell at half resolution needs one
+of each, so the conversion emits 1296x972 and discards nothing. The debayer
+reads a 1280x720 window of that, and the rows outside the window are band-limited
+away. libcamera's maximum is 2584x1944 (not the sensor's 2592x1944 - the
+`(2x2)-(2584x1944)/(+2,+2)` crop), which preserves the 4x4 mosaic phase.
