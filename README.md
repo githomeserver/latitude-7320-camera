@@ -215,9 +215,9 @@ Measured on this machine; scene-dependent figures move with the scene.
 **What is still not good: saturation.** The sensor separates colour far less than
 sRGB expects - measured on a colour chart, the dominant/next-channel ratio falls
 short by **6.8x on red and 4.4x on blue**. A matrix that fully corrects that
-needs off-diagonals of +-3 and amplifies noise 5.3x, against 1.9x for the matrix
-that ships. On a sensor that is already noise limited that is the wrong trade, so
-the shipped matrix is deliberately a compromise. See
+needs off-diagonals of +-3 and amplifies noise 5.3x. Intel's matrices - the ones
+the installer ships - are a compromise between accuracy and noise. On a sensor
+that is already noise limited, "more accurate" costs 2-3x more noise. See
 [Known limitations](#known-limitations).
 
 The rear OV8856 is **not** addressed here.
@@ -515,14 +515,16 @@ sudo tools/install-rgbir.sh build       # RGB-IR pre-pass + denoise into the sou
 sudo tools/install-rgbir.sh enable      # installs the patched libcamera
 sudo tools/install-tuning.sh
 
-# 4. colour matrix (per-camera - see "Colour tuning" before copying numbers)
-sudo tools/install-ccm.sh 1.8101,-0.3453,-0.4648,0.3076,0.4034,0.2890,-0.1110,-0.6389,1.7499
+# 4. colour matrix - Intel's tuning for this exact sensor, extracted from the
+#    .aiqb by tools/extract-ccm.py (see docs/intel-ccm-ov5678.md). D50 matches a
+#    ~4800 K LED; the doc lists the other illuminants.
+sudo tools/install-ccm.sh 1.81986320,-0.77644408,-0.04341904,-0.12864910,1.56615222,-0.43750316,-0.13377318,-0.78377765,1.91755080
 
 # 5. lens shading, measured from YOUR unit: hold plain white paper over the lens
 sudo tools/measure-lens-shading.sh --raw     # writes data/lens-shading-measured-raw.bin
 
 # 6. the camera service, which also feeds /dev/video0 for browsers
-sudo SHARPNESS=0.5 IRSUB=2.0 tools/install-camera-service.sh
+sudo tools/install-camera-service.sh
 
 # optional: hide the 64 dead ipu6 entries from the browser's camera list
 sudo tools/hide-raw-ipu6-nodes.sh
@@ -565,9 +567,11 @@ Step 1 fixes the red/blue transposition and makes the sensor bind at all; step 3
 fixes the libcamera defects; steps 4-6 are colour and noise. Any one alone still
 looks wrong, which is what made this confusing to diagnose.
 
-**Do not copy the matrix in step 4 blindly.** It was solved for this camera. It
-is included because it is a reasonable starting point and because a `Ccm` entry
-must exist at all for the saturation control to work - see
+**Do not copy the matrix in step 4 blindly.** The D50 matrix is Intel's tuning for
+this exact sensor module, extracted from its `.aiqb` file, not a number fitted
+for any other camera. It is a reasonable starting point; if your light differs,
+pick the matching illuminant from [docs/intel-ccm-ov5678.md](docs/intel-ccm-ov5678.md).
+A `Ccm` entry must exist at all for the saturation control to work - see
 [defect 7](#7-saturation-is-silently-inert-without-a-ccm-libcamera).
 
 **Do not skip step 5.** The shading map is per-unit. Intel ships tables for this
@@ -640,7 +644,7 @@ looking at if it is out:
 | symptom | cause | fix |
 |---|---|---|
 | `R/G` around 0.3–0.4, strong cyan cast | full step 4 not applied | re-run step 4 in order |
-| `R/G` around 0.55, cast reduced but present | no CCM installed | run step 5 |
+| `R/G` around 0.55, cast reduced but present | no CCM installed | run step 4 |
 | balance neutral but colours plainly wrong (red objects look blue) | GBRG CFA patch not loaded | check `modinfo -n ov5675` resolves to `updates/dkms` |
 | saturation above ~30% | nothing from step 4 is in effect | check `systemctl show ov5678-camera -p Environment` |
 | whites tinted lavender | blue coefficient too high for your light | re-derive it, see [Colour tuning](#colour-tuning) |
@@ -707,7 +711,7 @@ disk by `build-libcamera.sh revert` — remove it by hand if you want the space.
 
 ## Colour tuning
 
-Step 5 installs a colour correction matrix. It does two jobs: it corrects hue
+Step 4 installs a colour correction matrix. It does two jobs: it corrects hue
 and saturation, and its mere presence switches on the `ccmEnabled` code path,
 without which the `Saturation` control does nothing (defect 7).
 
@@ -772,7 +776,7 @@ The simulation is exact rather than approximate — the pipeline computes
 re-encoding reproduces what the camera would have emitted. Identity round-trips
 at 0/255 error.
 
-The values in step 5 came out of that process on this machine:
+The values in step 4 came out of that process on this machine:
 `wb=1.0972:1:2.6407` under a 4000 K LED, `sat=1.8` chosen by eye.
 
 ### Three traps, all of which cost time here
@@ -809,12 +813,13 @@ amplifies settles the question:
 
 | matrix | worst-channel noise gain |
 |---|---|
-| the one that ships, `[1.8101, -0.3453, -0.4648, ...]` | **1.90x** |
+| Intel's D50 (what the installer ships) | **~2.1x** |
+| the old hand-fitted `[1.8101, -0.3453, -0.4648, ...]` | 1.90x |
 | best fit with per-channel IR subtraction | 3.89x |
 | best fit with a single IR coefficient | 5.34x |
 
 On a sensor that is already noise limited, "more accurate" costs 2-3x more noise.
-The shipped matrix is deliberately a compromise, and re-fitting is not worth
+Intel's matrices are the deliberate compromise, and re-fitting is not worth
 attempting on this hardware.
 
 **Per-channel IR subtraction does not help** - measured, not assumed.
