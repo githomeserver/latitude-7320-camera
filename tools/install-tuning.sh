@@ -32,7 +32,7 @@ mkdir -p "$(dirname "$LOG")"
 
 if [ "${1:-install}" = "revert" ]; then
     for d in "${DESTS[@]}"; do rm -f "$d"; echo "removed $d"; done
-    systemctl restart v4l2-relayd.service
+    systemctl restart ov5678-ondemand.service
     sleep 5
     echo "back to the guessed black level"
     exit 0
@@ -81,7 +81,7 @@ for d in "${DESTS[@]}"; do
 done
 grep -E 'blackLevel:' "${DESTS[0]}" | sed 's/^/     /'
 MARK="$(date '+%Y-%m-%d %H:%M:%S')"
-systemctl restart v4l2-relayd.service
+systemctl restart ov5678-ondemand.service
 sleep 6
 
 echo

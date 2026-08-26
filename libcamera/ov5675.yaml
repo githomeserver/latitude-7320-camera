@@ -24,8 +24,10 @@
 # 10-bit scales by 64 to 4122, giving the 8-bit level of 16 the soft ISP wants.
 # Anything in 4096..4351 yields the same 16.
 #
-# No Ccm is defined. A colour correction matrix improves hue accuracy but
-# cannot fix a white balance error, and none has been measured for this part.
+# No Ccm is defined here on purpose: this is the base the installer starts from.
+# tools/install-ccm.sh inserts one. Intel's matrices for this exact sensor are
+# extracted by tools/extract-ccm.py and documented in docs/intel-ccm-ov5678.md;
+# a CCM corrects hue and saturation but cannot fix a white balance error.
 
 %YAML 1.1
 ---

@@ -27,7 +27,7 @@ WHY THIS IS SAFE
     unlike the EEPROM.
 
 Run as root, with v4l2-relayd stopped:
-    sudo systemctl stop v4l2-relayd.service
+    sudo systemctl stop ov5678-ondemand.service
     sudo tools/sweep-isp-bits.py
 """
 

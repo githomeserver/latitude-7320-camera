@@ -23,12 +23,12 @@ mkdir -p "$(dirname "$LOG")"
 cleanup() {
     echo
     echo "== restarting v4l2-relayd =="
-    systemctl start v4l2-relayd.service 2>/dev/null || true
+    systemctl start ov5678-ondemand.service 2>/dev/null || true
 }
 trap cleanup EXIT
 
 echo "== stopping v4l2-relayd for exclusive sensor access =="
-systemctl stop v4l2-relayd.service
+systemctl stop ov5678-ondemand.service
 sleep 2
 
 echo

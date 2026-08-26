@@ -81,8 +81,8 @@ EOF
     sensor_state
 }
 
-echo "== stopping v4l2-relayd to free the camera =="
-systemctl stop v4l2-relayd.service
+echo "== stopping the camera pipeline to free it =="
+systemctl stop ov5678-ondemand.service
 sleep 2
 echo "  sensor before:"
 sensor_state
@@ -102,8 +102,8 @@ fi
 run_cam "B - libcamera alone, bright" b.log
 echo
 
-echo "== restarting v4l2-relayd =="
-systemctl start v4l2-relayd.service
+echo "== restarting the camera pipeline =="
+systemctl start ov5678-ondemand.service
 sleep 6
 
 echo "== C - through /dev/video0 (the relay path) =="

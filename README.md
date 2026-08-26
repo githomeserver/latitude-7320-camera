@@ -23,9 +23,10 @@ cat /sys/class/dmi/id/product_name        # must print: Latitude 7320 Detachable
 Note "Detachable". There is also a **Dell Latitude 7320 laptop**, a different
 machine with no IPU6, and none of this applies to it.
 
-**What you get:** `/dev/video0` at 1280x720, roughly 28 fps, usable in Firefox,
-Chromium and anything else that opens a normal camera device. Colour is
-reasonable, not excellent - see [Known limitations](#known-limitations).
+**What you get:** `/dev/video0` at 1280x720, usable in Firefox, Chromium and
+anything else that opens a normal camera device. The sensor runs at 30 fps but
+the software ISP is single-threaded, so delivered frame rate is roughly 10-20 fps.
+Colour is reasonable, not excellent - see [Known limitations](#known-limitations).
 
 **What it touches.** Out-of-tree kernel modules via DKMS, so they rebuild when
 your kernel updates. A libcamera build in `/usr/local` - **nothing under `/usr` is
@@ -189,14 +190,16 @@ with colour ones and destroys the very structure being looked for.
 
 ## Status
 
-Working: 1280x720 at ~28 fps in Firefox, Chromium, and anything else that opens
+Working: 1280x720 in Firefox, Chromium, and anything else that opens
 `/dev/video0`. The 4x4 RGB-IR mosaic is now handled properly by a pre-pass
 rather than being misread as Bayer, lens shading is corrected from a map measured
-on this unit, and a temporal denoise runs on the mosaic.
+on this unit, and a temporal denoise runs on the mosaic. The sensor runs at
+30 fps; delivered frame rate through the loopback and browser is 10-20 fps,
+since libcamera's software ISP (pre-pass + debayer + denoise) is single-threaded.
 
 | | before | now |
 |---|---|---|
-| works at all | no driver claimed the ACPI id | 1280x720 at ~28 fps |
+| works at all | no driver claimed the ACPI id | 1280x720 (sensor 30 fps) |
 | mosaic | 4x4 RGB-IR read as 2x2 Bayer | converted to Bayer up front |
 | white balance (linear R/G) | 0.372 | ~1.00 |
 | red and blue | transposed | correct |
@@ -704,24 +707,15 @@ disk by `build-libcamera.sh revert` — remove it by hand if you want the space.
 
 ## Colour tuning
 
-Step 5 installs a colour correction matrix. It does two jobs: it corrects the
-white balance the GPU debayer leaves wrong (defect 6), and its mere presence
-switches on the `ccmEnabled` code path, without which the `Saturation` control
-does nothing (defect 7).
+Step 5 installs a colour correction matrix. It does two jobs: it corrects hue
+and saturation, and its mere presence switches on the `ccmEnabled` code path,
+without which the `Saturation` control does nothing (defect 7).
 
-**Use the GPU debayer, not `SOFTISP_MODE=cpu`.** Earlier revisions of this file
-recommended the CPU path as the workaround for defect 6. That was a mistake.
-Measured on the same machine:
-
-| | CPU debayer | GPU debayer |
-|---|---|---|
-| frame time (with a CCM) | ~13 ms | no stutter |
-| black floor on a lit scene | `(70, 50, 144)` | `(28, 31, 5)` |
-
-The CPU path also applies the CCM per pixel in software, which more than
-doubled frame time here. The violet shadows in the CPU column are flare being
-amplified by the ~4.9x blue AWB gain; the GPU path does not apply that gain, so
-its blacks stay black. Correct the balance with the matrix instead.
+The pipeline uses the **CPU debayer** (`LIBCAMERA_SOFTISP_MODE=cpu`): the RGB-IR
+pre-pass that converts the 4x4 mosaic to Bayer lives in `debayer_cpu.cpp`, so
+the CPU path is not optional, and the matrix is applied there per pixel in
+software. The matrix itself is deliberately a compromise - see
+[Known limitations](#known-limitations).
 
 ### Forcing an exposure, and the clipping trap
 
@@ -864,42 +858,25 @@ only when the `dw9714` VCM is loaded, which the front module does not have.
 raw nodes out of the `video` group. That is the trade for a clean camera list;
 `cam` and `check-camera.sh` will report permission errors without it.
 
-**Lens shading is uncorrected, and it is the largest remaining defect.**
-Measured on a flat field (one uniform wall filling the frame):
+**Lens shading is corrected from a per-channel map measured on this unit.**
+A flat field (one uniform wall filling the frame) shows why it mattered: in
+linear light the corners sit at 45% of centre and need a 2.22x gain, and B/G
+varies 1.8x across the frame. That is an IR-cut filter behaving as interference
+filters do - its passband shifts with the angle of incidence, so off-axis rays
+get a different colour response. Intel's own tuning file agrees (2.40x at the
+equivalent radius, within 8%), from a completely independent source.
 
-```
-              brightness   linear B/G
-centre            237         1.11
-edges             ~165        1.86 - 1.99
-```
+The map is measured from RAW mosaic frames (`tools/measure-lens-shading.sh
+--raw`), applied per channel in the pre-pass, and split-half validated: corners
+go 0.281 -> 1.001 (G), 0.310 -> 0.996 (R), 0.289 -> 0.998 (B). Because it is
+per-channel it corrects the colour cast as well as the brightness falloff, so a
+single white balance is now correct across the frame. The map is specific to
+this unit's lens - a different module should re-measure it.
 
-Those brightness figures are 8-bit gamma-encoded. **In linear light, which is
-what a shading gain corrects, the corners are at 45% of centre and need a
-2.22x gain** - an earlier version of this file called it "31% falloff", which
-was the gamma-encoded difference and understated it badly. Separately,
-**B/G varies 1.8x across the frame** - blue is nearly twice as strong at the
-edges as in the middle.
-
-Intel's own tuning file for this module ships lens shading tables that agree:
-2.40x at the equivalent radius, within 8% of our measurement, from a completely
-independent source. See [docs/aiqb-format.md](docs/aiqb-format.md). That is
-an IR-cut filter behaving as interference filters do: its passband shifts with
-the angle of incidence, so off-axis rays get a different colour response.
-
-The consequence is that **no single white balance can be correct everywhere**.
-Correct the centre and the corners go blue; correct the corners and the centre
-goes yellow. The tuning here targets the centre, because that is where faces
-and held objects are.
-
-libcamera's simple IPA has no lens shading algorithm at all - its algorithms
-are `adjust`, `agc`, `awb`, `blc` and `ccm` - so this is not a setting that can
-be turned on. Fixing it means writing a new IPA algorithm plus a spatial gain
-map in the debayer.
-
-**The correction tables now exist.** Intel's tuning for this module contains
-per-channel 63x47 gain grids - five channels, the fifth being infrared - in
-1/2048 fixed point. Decoding is documented in
-[docs/aiqb-format.md](docs/aiqb-format.md).
+The shipped `data/lens-shading-measured-raw.bin` is that map. Intel's tables for
+this module (per-channel 63x47 gain grids, five channels including infrared)
+are decoded in [docs/aiqb-format.md](docs/aiqb-format.md) and kept for
+reference; ours measured better on the holdout set.
 
 ## Diagnostics
 

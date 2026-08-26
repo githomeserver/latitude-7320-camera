@@ -20,7 +20,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="$HERE/../data/awb-evidence.log"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"; systemctl start v4l2-relayd.service 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMP"; systemctl start ov5678-ondemand.service 2>/dev/null || true' EXIT
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: must run as root (sudo $0)" >&2; exit 1; }
 mkdir -p "$(dirname "$LOG")"
@@ -66,7 +66,7 @@ echo "kernel:    $(uname -r)"
 echo
 
 echo "== A. sensor native, raw Bayer =="
-systemctl stop v4l2-relayd.service
+systemctl stop ov5678-ondemand.service
 sleep 2
 python3 "$HERE/check-bayer-order.py" 2>&1 | grep -E 'CFA|black level|signal |^  +[0-9]|\(0,|\(1,|native balance|diagonal'
 echo
@@ -86,7 +86,7 @@ echo "  (a grey-world AWB targeting unity should reach R/G = B/G = 1.000)"
 echo
 
 echo "== restarting relay =="
-systemctl start v4l2-relayd.service
+systemctl start ov5678-ondemand.service
 sleep 5
 } 2>&1 | tee "$LOG"
 

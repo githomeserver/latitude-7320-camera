@@ -33,7 +33,7 @@
 # demonstrate anything - relight and try again rather than reporting it.
 #
 # Run as your normal user, with v4l2-relayd stopped:
-#     sudo systemctl stop v4l2-relayd.service
+#     sudo systemctl stop ov5678-ondemand.service
 #     tools/measure-awb-gain-range.sh
 #
 # Point the camera at a neutral, evenly lit surface filling the frame and do
@@ -54,9 +54,9 @@ fail() { printf '  \033[31m%s\033[0m %s\n' "FAIL" "$1"; }
 [ -d "$SRC/.git" ] || { echo "ERROR: no libcamera source at $SRC" >&2; exit 1; }
 [ -f "$TUNING" ]   || { echo "ERROR: tuning file missing: $TUNING" >&2; exit 1; }
 
-if systemctl is-active --quiet v4l2-relayd.service 2>/dev/null; then
+if systemctl is-active --quiet ov5678-ondemand.service 2>/dev/null; then
     echo "ERROR: v4l2-relayd is running and will hold the camera." >&2
-    echo "       sudo systemctl stop v4l2-relayd.service" >&2
+    echo "       sudo systemctl stop ov5678-ondemand.service" >&2
     exit 1
 fi
 

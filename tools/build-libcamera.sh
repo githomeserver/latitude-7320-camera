@@ -165,10 +165,10 @@ Environment=GST_PLUGIN_PATH=$GST_DIR
 EOF
     sed 's/^/  /' "$DROPIN"
     systemctl daemon-reload
-    systemctl restart v4l2-relayd.service
+    systemctl restart ov5678-ondemand.service
     sleep 6
     printf '\nservice: '
-    systemctl is-active v4l2-relayd@default.service || true
+    systemctl is-active ov5678-ondemand.service || true
     echo
     echo "Check the colour now. Revert with: sudo $0 revert"
     ;;
@@ -177,7 +177,7 @@ revert)
     rm -f "$DROPIN"
     rmdir "$DROPIN_DIR" 2>/dev/null || true
     systemctl daemon-reload
-    systemctl restart v4l2-relayd.service
+    systemctl restart ov5678-ondemand.service
     echo "reverted to the distro libcamera (the /usr/local build is left in place)"
     ;;
 

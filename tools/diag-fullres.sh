@@ -17,10 +17,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="$HERE/../data/fullres-diag.log"
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee "$LOG") 2>&1
-cleanup() { echo; echo "== restarting v4l2-relayd =="; systemctl start v4l2-relayd.service 2>/dev/null || true; chown "${SUDO_USER:-root}" "$LOG" 2>/dev/null || true; }
+cleanup() { echo; echo "== restarting v4l2-relayd =="; systemctl start ov5678-ondemand.service 2>/dev/null || true; chown "${SUDO_USER:-root}" "$LOG" 2>/dev/null || true; }
 trap cleanup EXIT
 echo "== stopping v4l2-relayd =="
-systemctl stop v4l2-relayd.service
+systemctl stop ov5678-ondemand.service
 sleep 2
 
 echo

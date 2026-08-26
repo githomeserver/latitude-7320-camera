@@ -140,7 +140,7 @@ relay-enable|relay-disable)
         echo "  reverted"
     fi
     systemctl daemon-reload
-    systemctl restart v4l2-relayd.service
+    systemctl restart ov5678-ondemand.service
     ;;
 
 *)

@@ -15,13 +15,13 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="$HERE/../data/ipa-debug.log"
 RAW="$(mktemp)"
-trap 'rm -f "$RAW"; systemctl start v4l2-relayd.service 2>/dev/null || true' EXIT
+trap 'rm -f "$RAW"; systemctl start ov5678-ondemand.service 2>/dev/null || true' EXIT
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: must run as root (sudo $0)" >&2; exit 1; }
 mkdir -p "$(dirname "$LOG")"
 
-echo "== stopping v4l2-relayd =="
-systemctl stop v4l2-relayd.service
+echo "== stopping the camera pipeline =="
+systemctl stop ov5678-ondemand.service
 sleep 2
 
 echo "== streaming with IPA debug logging =="

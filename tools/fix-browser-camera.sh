@@ -65,11 +65,11 @@ if [ "${1:-apply}" = "revert" ]; then
     rmdir "$DROPIN_DIR" 2>/dev/null || true
     # Apply creates this, so revert must remove it - otherwise the relay keeps
     # starting at boot against a reverted config.
-    rm -f /etc/systemd/system/v4l2-relayd.service.wants/v4l2-relayd@default.service
-    rmdir /etc/systemd/system/v4l2-relayd.service.wants 2>/dev/null || true
+    rm -f /etc/systemd/system/ov5678-ondemand.service.wants/v4l2-relayd@default.service
+    rmdir /etc/systemd/system/ov5678-ondemand.service.wants 2>/dev/null || true
     systemctl daemon-reload
     systemctl stop v4l2-relayd@default.service 2>/dev/null || true
-    systemctl restart v4l2-relayd.service
+    systemctl restart ov5678-ondemand.service
     exit 0
 fi
 
@@ -108,21 +108,21 @@ cat "$CONF" | sed 's/^/  /'
 
 echo
 echo "== starting the relay instance =="
-# v4l2-relayd.service is a oneshot stub (ExecStart=/bin/true) that exists only
+# ov5678-ondemand.service is a oneshot stub (ExecStart=/bin/true) that exists only
 # so the template instances have something to be PartOf. The daemon itself runs
 # as v4l2-relayd@<name>.service. On the Dell OEM image something started an
 # instance; on stock Ubuntu nothing does - there is no udev rule and no .wants
 # entry - so restarting the stub "succeeds" while no relay ever runs and
 # /dev/video0 stays output-only. Start it, and make it survive a reboot.
 INSTANCE=v4l2-relayd@default.service
-WANTS=/etc/systemd/system/v4l2-relayd.service.wants
+WANTS=/etc/systemd/system/ov5678-ondemand.service.wants
 
 mkdir -p "$WANTS"
 ln -sf /usr/lib/systemd/system/v4l2-relayd@.service "$WANTS/$INSTANCE"
 systemctl daemon-reload
 echo "  enabled at boot via $WANTS/$INSTANCE"
 
-systemctl restart v4l2-relayd.service
+systemctl restart ov5678-ondemand.service
 systemctl restart "$INSTANCE"
 sleep 4
 printf '  %-34s %s\n' "$INSTANCE" "$(systemctl is-active "$INSTANCE")"

@@ -102,7 +102,7 @@ if rails_up; then
     pass "VSIO, AUX1 and AUX2 all enabled"
 else
     fail "rails did not come up - the bus will time out, aborting"
-    info "is v4l2-relayd running and /dev/video0 fed? try tools/check-camera.sh"
+    info "is the camera pipeline running and /dev/video0 fed? try tools/check-camera.sh"
     exit 1
 fi
 echo

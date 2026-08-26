@@ -5,6 +5,6 @@ set -u
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: run as root" >&2; exit 1; }
 C="${1:-red}"
-trap 'systemctl start v4l2-relayd.service 2>/dev/null || true' EXIT
-systemctl stop v4l2-relayd.service; sleep 2
+trap 'systemctl start ov5678-ondemand.service 2>/dev/null || true' EXIT
+systemctl stop ov5678-ondemand.service; sleep 2
 python3 "$H/check-rb-swap-raw.py" "$C"

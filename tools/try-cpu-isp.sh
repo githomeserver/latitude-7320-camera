@@ -24,7 +24,7 @@ gpu) rm -f "$D"; echo "back to default (GPU)" ;;
 *)   echo "usage: $0 [cpu|gpu]" >&2; exit 1 ;;
 esac
 systemctl daemon-reload
-systemctl restart v4l2-relayd.service
+systemctl restart ov5678-ondemand.service
 sleep 6
 printf 'service: '; systemctl is-active v4l2-relayd@default.service || true
 echo

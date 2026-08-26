@@ -47,8 +47,11 @@ SRC="$HERE/../libcamera/ov5675.yaml"
 # Respect the environment. This was a plain assignment, so `CT=5000 ./install-ccm.sh`
 # silently labelled a matrix measured at 5000 K as 3100 - the same trap IRSUB hit
 # in install-camera-service.sh, and the second time this pattern has bitten here.
-CT="${CT:-3100}"   # matches the ~3139 K this sensor reports indoors; with a single
-            # entry getInterpolated() returns it for every temperature anyway.
+CT="${CT:-3100}"   # Must match what this AWB reports for the light a matrix was
+            # fitted under (now ~4800 K under this room's LED). With a single
+            # entry getInterpolated() returns it regardless of temperature, so it
+            # is inert until a second matrix is added - then a wrong label blends
+            # the wrong pair. tools/solve-ccm.py reported_ct() measures the value.
 
 # bl=<n> raises the black level above the sensor's own pedestal (4122) to soak
 # up veiling flare. The flare floor is scene-dependent, so this is a deliberate
@@ -81,10 +84,10 @@ targets() {
 }
 
 restart() {
-    systemctl restart v4l2-relayd.service
-    sleep 6
+    systemctl restart ov5678-ondemand.service
+    sleep 2
     printf 'service: '
-    systemctl is-active v4l2-relayd@default.service || true
+    systemctl is-active ov5678-ondemand.service || true
 }
 
 if [ "$SPEC" = "revert" ]; then
