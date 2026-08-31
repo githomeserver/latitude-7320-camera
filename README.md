@@ -206,7 +206,7 @@ since libcamera's software ISP (pre-pass + debayer + denoise) is single-threaded
 | corner brightness (linear, vs centre) | 0.28 | **1.00** |
 | temporal noise, still scene | baseline | **2.0x cleaner**, corners included |
 | blown highlights | went **black** | white |
-| CPU while streaming | 104% of one core | **78%** |
+| CPU while streaming | 104% of one core | **~102%** - one core saturated |
 | CPU with nothing watching | 104% of one core | **5.5%** |
 | CPU temperature, idle | 99 C | **43 C** |
 
@@ -592,6 +592,7 @@ corners to within 0.4% on held-out frames.
 | `IRSUB` | `1.0` | How much of the IR plane to subtract from R, G and B. Higher saturates more; above ~3.0 the shadows go magenta as green clamps at zero. **2.0 is the usable limit.** |
 | `IRSUB` (highlights) | automatic | Near saturation the subtraction is faded out and switched off entirely at full scale. It has to be: in a blown highlight - a ceiling light, a reflection off anything shiny - every channel including IR pins at full scale, so subtracting 2x of it drives R, G and B to about -900 and they clamp at zero. **The brightest thing in the frame came out black** - measured at 13.8% of the pixels around a ceiling light, now 0%, with mid-tone saturation unchanged (0.0459 -> 0.0450). Not a knob; there is no case where you want the old behaviour. |
 | `IRSUB_ADAPT` | `1` | Scale `IRSUB` per cell by how much of the IR channel is real signal. IR is the weakest channel here and the first to run out of photons: in a dark room a cell can hold 3 counts of IR under comparable noise, and subtracting 2x of that from R, G and B is subtracting noise, not infrared. Each cell uses `IRSUB * SNR^2 / (1 + SNR^2)`, the least-squares answer, so it stays at full strength where IR is clean and falls away where IR is noise. Measured on a starved frame: **1.13x less grain with R/G and B/G unmoved** (0.9162 -> 0.9176). Per cell, not per frame - a frame with a lamp and a dim wall has a mean IR dominated by the lamp. `0` restores the old fixed coefficient. |
+| `CCM_HIGHLIGHT` | `0.85` | Knee, as a fraction of full scale, at which the colour matrix fades toward the plain white-balanced value. `0` disables it. A matrix is fitted on unclipped patches and says nothing about what happens when an input clips, but the arithmetic carries on: once the most sensitive channel clips while white balance pins the others at maximum, the green row's negative off-diagonals drive green **down** and the highlight goes **magenta**. Intel's matrices reach -0.78 off-diagonal, so this is not hypothetical. Keyed on the pixel's **max** channel so all three columns fade together - keying per channel fades them at different times and puts a **cyan ring** around every bright source, which is why this lives in `STORE_PIXEL` and not in the per-channel tables. |
 | `CHROMA_BLUR` | `1` | Smooth red and blue across neighbouring cells: 0 off, 1 a 3x3 average, 2 a 5x5. Chroma is where the visible noise is - red occupies only 2 of the 16 mosaic positions and the colour matrix amplifies that row 1.90x. Measured in the Bayer plane, radius 1 takes red noise sd **13.22 -> 7.06** and blue **11.63 -> 5.08**, with **green unchanged at 13.45** - so the detail the eye reads as sharpness is untouched. 2 is smoother but starts to look soft. |
 | `SATURATION` | `1.0` | Chroma gain applied after the colour matrix, 0.0-2.0. Omitted from the command line entirely at 1.0. This is the cheap way to buy apparent colour here: the matrix that would fully correct this sensor's separation needs off-diagonals of +-3 and amplifies noise 5.3x, so it costs chroma noise instead of matrix conditioning - and chroma noise is what `CHROMA_BLUR` already halves. **A trade, not a win**: measured on a dim, nearly colourless night scene, 1.6 gave 1.52x the chroma for 1.73x the chroma noise, which is close to the worst case since there was little real colour to amplify. Judge it on a lit, colourful scene. Requires `Ccm` listed before `Adjust` in the tuning file, or it does nothing at all - see defect 7. |
 | `SHADING` | measured map | Path to a per-channel gain map, or empty to disable. |
@@ -601,7 +602,7 @@ corners to within 0.4% on held-out frames.
 
 ### On-demand, and why it needs a placeholder
 
-The full pipeline costs ~78% of one CPU core. On a fanless 9 W detachable that is
+The full pipeline saturates one CPU core (~102%). On a fanless 9 W detachable that is
 an audible fan and a hot lid for nothing when no application has the camera open,
 so `ov5678-ondemand.service` starts the real pipeline only while a consumer is
 attached, and stops it 15 s after the last one leaves. Idle cost drops to 5.5% of
@@ -904,6 +905,7 @@ differs:
 | `ccm-preview.sh` | capture a frame and render it through candidate matrices; refuses unusable frames |
 | `try-ccm.py` | the renderer behind it; `--matrix <spec>` prints coefficients |
 | `install-ccm.sh` | install a matrix and/or raise the black level |
+| `refresh-debayer-patch.sh` | regenerate `libcamera-rgbir/debayer_cpu.patch` from the build tree; `--check` reports drift |
 | `set-saturation.sh` | the live saturation knob (needs a CCM installed first) |
 | `check-rgbir.sh` | prove the mosaic is 4x4 RGB-IR, not 2x2 Bayer, from raw pixels |
 | `rgbir-proof.sh` | demosaic one raw frame both ways, side by side; saves the raw |

@@ -94,6 +94,18 @@ PY
     [ -f "$PATCH" ] || { echo "ERROR: missing $PATCH" >&2; exit 1; }
     if patch -s -p4 -R --dry-run -d "$ISP" < "$PATCH" >/dev/null 2>&1; then
         echo "   already applied"
+        # An already-patched tree may also have been EDITED since. That is how
+        # the patch went stale twice: work lived only in ~/.cache while every
+        # source file in git looked correct. Say so here rather than let a later
+        # clone build something quietly different.
+        if [ -x "$HERE/refresh-debayer-patch.sh" ]; then
+            "$HERE/refresh-debayer-patch.sh" --check >/dev/null 2>&1 || {
+                echo
+                echo "   WARNING: the build tree has changes the committed patch does not."
+                echo "            Run: tools/refresh-debayer-patch.sh"
+                echo
+            }
+        fi
     elif patch -s -p4 -d "$ISP" < "$PATCH"; then
         echo "   applied"
     else
