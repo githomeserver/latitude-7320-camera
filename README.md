@@ -788,13 +788,17 @@ The values in step 4 came out of that process on this machine:
   against a wall gave `b=3.24` here; against paper it was `2.64`.
 - **Lens shading makes the answer depend on where you measure.** See below. Take
   the reference from the centre, which is where faces and held objects are.
-- **Saturation puts magenta on blown highlights.** A clipped highlight arrives
-  at the matrix as `(1,1,1)` rather than the sensor's native ratios, so the
-  correction over-shoots: red and blue pin at maximum, green is pulled down.
-  At `sat=1.0` clipped whites stay white; green falls to 0.86 at `sat=1.4` and
-  0.59 at `sat=2.2`. That is inherent to correcting a large imbalance with a
-  matrix, not a bug — real ISPs use highlight recovery, which the soft ISP has
-  no equivalent of.
+- **Blown highlights go magenta, and this is now handled.** A clipped highlight
+    arrives at the matrix as `(1,1,1)` rather than the sensor's native ratios, so
+    the correction over-shoots: red and blue pin at maximum, green is pulled
+    down. Measured with saturation alone: at `sat=1.0` clipped whites stay white,
+    green falls to 0.86 at `sat=1.4` and 0.59 at `sat=2.2`. Intel's matrices make
+    it worse again, reaching -0.78 off-diagonal in the blue row.
+    This bullet used to say the effect was inherent to correcting a large
+    imbalance with a matrix, and that real ISPs use highlight recovery which the
+    soft ISP had no equivalent of. It has one now: `CCM_HIGHLIGHT` fades the
+    matrix toward the plain white-balanced value near saturation, keyed on the
+    pixel's max channel so all three fade together. See the runtime knobs.
 
 ## Known limitations
 
