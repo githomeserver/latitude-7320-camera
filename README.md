@@ -690,6 +690,28 @@ another of the same model and wrong on anything else - re-measure with
 **None of this applies to different hardware.** The board data is DMI-guarded on
 `Latitude 7320 Detachable` and does nothing anywhere else, deliberately.
 
+### If the loopback is not /dev/video0
+
+Nothing pins v4l2loopback's device number - it takes the first free node. On this
+machine it loads before the IPU6 creates its 64 raw ISYS nodes and lands on
+`/dev/video0`; where the IPU6 wins that race it lands on **`/dev/video64`**, and
+anything hardcoding `/dev/video0` then talks to a raw sensor node instead. The
+symptom is that `gst-launch-1.0 v4l2src device=/dev/video64` shows a picture
+while browsers find no camera at all - the loopback has no producer, so there is
+no format for them to negotiate. Reported as issue #2.
+
+`install-camera-service.sh` now detects the node instead of assuming it, and
+`LOOPBACK` overrides the detection:
+
+```sh
+tools/find-loopback.sh                       # which node is the loopback
+sudo LOOPBACK=/dev/video64 tools/install-camera-service.sh
+```
+
+`hide-raw-ipu6-nodes.sh` is unaffected either way: its udev rule matches on
+`ID_V4L_PRODUCT=="ipu6"`, not on the device number, so it cannot hide a loopback
+that happens to sit inside the IPU6's range.
+
 ## Uninstalling
 
 Not every script uses the same word, so spelling it out:
@@ -908,6 +930,7 @@ differs:
 | `solve-ccm.py`, `make-ccm-target.py` | fit a colour correction matrix from a displayed target |
 | `ccm-preview.sh` | capture a frame and render it through candidate matrices; refuses unusable frames |
 | `try-ccm.py` | the renderer behind it; `--matrix <spec>` prints coefficients |
+| `find-loopback.sh` | print the v4l2loopback node, matched on driver name |
 | `install-ccm.sh` | install a matrix and/or raise the black level |
 | `refresh-debayer-patch.sh` | regenerate `libcamera-rgbir/debayer_cpu.patch` from the build tree; `--check` reports drift |
 | `set-saturation.sh` | the live saturation knob (needs a CCM installed first) |

@@ -31,7 +31,16 @@ set -eu
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT=/etc/systemd/system/ov5678-camera.service
-LOOPBACK=/dev/video0
+# Respect the environment, and auto-detect otherwise. This was a plain
+# assignment, so `LOOPBACK=/dev/video64 ./install-camera-service.sh` was silently
+# ignored - the third time this exact pattern has bitten here, after IRSUB and CT.
+#
+# The default is detected rather than assumed because v4l2loopback's device
+# number is not pinned: it takes the first free node, so it lands on /dev/video0
+# only when it loads before the IPU6 creates its 64 raw ISYS nodes. Where the
+# IPU6 wins that race the loopback is /dev/video64 and hardcoding video0 points
+# the whole pipeline at a raw sensor node. Reported as issue #2.
+LOOPBACK="${LOOPBACK:-$("$HERE/find-loopback.sh" 2>/dev/null || echo /dev/video0)}"
 # Respect the environment. This was a plain assignment, so `IRSUB=2.0 ./install`
 # silently ran at 1.0 - an entire IR-subtraction sweep produced byte-identical
 # results and looked like the feature doing nothing.
