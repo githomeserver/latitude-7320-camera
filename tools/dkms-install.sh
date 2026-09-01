@@ -40,7 +40,21 @@ OLD_PKGS="int3472-dell7320/0.1 camera-dell7320/0.2 camera-dell7320/0.3"
 
 remove_pkg() {
     local n="$1" v="$2"
-    dkms status -m "$n" 2>/dev/null | grep -q . && dkms remove -m "$n" -v "$v" --all || true
+    # Do NOT delete the source after a failed remove.
+    #
+    # This was `dkms remove ... || true` followed unconditionally by the rm, so a
+    # remove that failed was swallowed and the source deleted anyway - leaving
+    # dkms with a registered module whose source is gone. That does not fail here;
+    # it fails at the next kernel upgrade, a long way from the cause.
+    if dkms status -m "$n" 2>/dev/null | grep -q .; then
+        if ! dkms remove -m "$n" -v "$v" --all; then
+            echo "WARNING: dkms remove failed for $n/$v." >&2
+            echo "         Leaving /usr/src/$n-$v in place: deleting it now would" >&2
+            echo "         strand the registration and break the next kernel" >&2
+            echo "         upgrade. Check 'dkms status' before retrying." >&2
+            return 1
+        fi
+    fi
     rm -rf "/usr/src/$n-$v"
 }
 
@@ -64,7 +78,11 @@ echo "== dropping any previous build =="
 for pv in $OLD_PKGS; do
     if dkms status -m "${pv%%/*}" -v "${pv##*/}" 2>/dev/null | grep -q .; then
         echo "   removing $pv"
-        remove_pkg "${pv%%/*}" "${pv##*/}"
+        # A legacy package that will not remove should not block a fresh
+            # install. remove_pkg leaves its source in place on failure, so
+            # continuing cannot strand a registration - it only means one old
+            # package is still listed, and it has already said so.
+            remove_pkg "${pv%%/*}" "${pv##*/}" || true
     fi
 done
 

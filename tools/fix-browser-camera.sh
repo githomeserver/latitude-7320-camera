@@ -29,6 +29,13 @@
 
 set -eu
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The loopback is not always /dev/video0: v4l2loopback takes the first free node,
+# so where the IPU6's 64 raw ISYS nodes get there first it lands on /dev/video64.
+# Detect it, and let the environment override. See issue #2.
+LOOPBACK="${LOOPBACK:-$("$HERE/find-loopback.sh" 2>/dev/null || echo /dev/video0)}"
+
 # The config path differs between installs. v4l2-relayd@.service reads
 #   EnvironmentFile=/etc/default/v4l2-relayd          (always)
 #   EnvironmentFile=-/etc/v4l2-relayd.d/%i.conf       (optional, per instance)
@@ -129,7 +136,7 @@ printf '  %-34s %s\n' "$INSTANCE" "$(systemctl is-active "$INSTANCE")"
 
 # The loopback advertises OUTPUT only until a producer attaches, so the
 # capture bit is the real check that the relay is feeding it.
-if v4l2-ctl -d /dev/video0 --info 2>/dev/null | grep -q 'Video Capture'; then
+if v4l2-ctl -d "$LOOPBACK" --info 2>/dev/null | grep -q 'Video Capture'; then
     echo "  /dev/video0 reports Video Capture - a producer is attached"
 else
     echo "  WARNING: /dev/video0 has no Video Capture capability." >&2
@@ -143,5 +150,5 @@ journalctl -u 'v4l2-relayd*' --since '30 seconds ago' --no-pager 2>/dev/null \
 
 echo
 echo "Now verify frames actually reach /dev/video0:"
-echo "  gst-launch-1.0 -q v4l2src device=/dev/video0 ! videoconvert ! fakesink num-buffers=10"
+echo "  gst-launch-1.0 -q v4l2src device="$LOOPBACK" ! videoconvert ! fakesink num-buffers=10"
 echo "Then retry the browser."

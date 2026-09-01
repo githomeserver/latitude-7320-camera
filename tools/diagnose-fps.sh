@@ -30,6 +30,11 @@ trap 'rm -rf "$TMP"' EXIT
 # per-run cam logs live in a temp dir that is deleted on exit, so without this
 # the whole run has to be repeated just to re-read the result.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The loopback is not always /dev/video0: v4l2loopback takes the first free node,
+# so where the IPU6's 64 raw ISYS nodes get there first it lands on /dev/video64.
+# Detect it, and let the environment override. See issue #2.
+LOOPBACK="${LOOPBACK:-$("$HERE/find-loopback.sh" 2>/dev/null || echo /dev/video0)}"
 LOG="$HERE/../data/fps-diagnosis.log"
 mkdir -p "$(dirname "$LOG")"
 if [ -z "${OV5678_TEEING:-}" ]; then
@@ -108,7 +113,7 @@ sleep 6
 
 echo "== C - through /dev/video0 (the relay path) =="
 S=$(date +%s.%N)
-if timeout 120 gst-launch-1.0 -q v4l2src device=/dev/video0 num-buffers=60 \
+if timeout 120 gst-launch-1.0 -q v4l2src device="$LOOPBACK" num-buffers=60 \
      ! fakesink sync=false >/dev/null 2>&1; then
     E=$(date +%s.%N)
     python3 -c "d=$E-$S; print(f'    60 frames in {d:.1f}s -> {60/d:.1f} fps')"

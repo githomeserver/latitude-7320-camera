@@ -16,6 +16,11 @@
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The loopback is not always /dev/video0: v4l2loopback takes the first free node,
+# so where the IPU6's 64 raw ISYS nodes get there first it lands on /dev/video64.
+# Detect it, and let the environment override. See issue #2.
+LOOPBACK="${LOOPBACK:-$("$HERE/find-loopback.sh" 2>/dev/null || echo /dev/video0)}"
 SRC="$HERE/../libcamera/ov5675.yaml"
 # The locally built libcamera searches its own prefix, so install to every
 # IPA config dir that exists rather than assuming the distro one.
@@ -43,7 +48,7 @@ fi
 # Ratios in LINEAR light from the relay's /dev/video0.
 ratios() {
     rm -f "$TMP"/f-*.png
-    timeout 40 gst-launch-1.0 -q v4l2src device=/dev/video0 \
+    timeout 40 gst-launch-1.0 -q v4l2src device="$LOOPBACK" \
         ! videoconvert ! videorate ! video/x-raw,framerate=2/1 \
         ! identity eos-after=8 ! pngenc \
         ! multifilesink location="$TMP/f-%02d.png" >/dev/null 2>&1
