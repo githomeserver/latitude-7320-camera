@@ -182,3 +182,29 @@ assuming a credential problem.
 4. The sensor-delays patch does **not** apply to Ubuntu's 0.7.0 tree (their ov5675 entry already has an empty `.sensorDelays = { }`; upstream's has none). It is correct for upstream submission as-is. `tools/build-libcamera.sh` does the local edit separately.
 
 Recipients came from `scripts/get_maintainer.pl`; full list in `upstream/SENDING.md`.
+
+**SAKARI REVIEWED v2 ON 2026-09-01** (`20260816070108.9308-1-adee.sahan@gmail.com`
+thread). Constructive, not a rejection. Four things, all of which define v3:
+
+1. **"The commit message is too big, please keep only the essentials."**
+2. **VIO: reuse the shared init_data.** He points at Thierry Chatard's v10 5/8
+   (`20260831160754.9857-6-tchatard@gmail.com`), which introduces
+   `common_tps68470_vio_reg_init_data`. Our values are byte-identical
+   (1800600/1800600, apply_uV, always_on), so v3 drops our own definition and
+   uses his - **which makes v3 depend on his v10 landing first**.
+3. **"There are no consumers for these three. Are they needed?"** - about CORE,
+   ANA and VCM. Confirmed: zero consumer supplies on all three. This is
+   answerable on hardware by removing them, rebuilding the DKMS module and
+   rebooting (INT3472 probes once per boot, see
+   [[int3472-board-data-needs-reboot]]). Expectation is they are NOT needed -
+   nothing enables a rail with no consumer, and only VSIO+AUX1+AUX2 were ever
+   shown to matter - but that is a hypothesis until tested.
+4. **The ov5678 needs its own driver, gated on the Common Raw Sensor Model
+   patches, and "it'll still take a while".** So patch 2/3's approach - ov5675
+   plus an ACPI id - is not the accepted shape, and 2/3 and 3/3 stay parked. Note
+   the new name: this is the successor to what he called the metadata series in
+   August.
+
+v3 checklist: trim the message, reuse the common VIO data once v10 lands, answer
+the CORE/ANA/VCM question with the reboot test, and add the `Assisted-by:`
+trailer - see [[ov5678-v3-needs-ai-disclosure]].

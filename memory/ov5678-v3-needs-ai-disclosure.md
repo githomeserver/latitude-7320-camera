@@ -20,10 +20,15 @@ exact file. Charles has separately mentioned maintainers losing time to
 AI-generated noise; being visibly on the right side of that is worth more than
 the line costs. Finding out after the fact that it was expected would be worse.
 
-**How to apply:** put it in the cover letter, not the commit message, following
-Thierry's shape - what the assistant was used for, and an explicit statement that
-the author reviewed and tested it on hardware and takes responsibility. His
-wording:
+**How to apply: a trailer, not a paragraph.** Thierry used a cover-letter
+paragraph in v9 and switched to a per-patch trailer in v10, which is the form to
+copy since ours is a single patch with no cover letter:
+
+    Assisted-by: Claude Code:claude-opus-4-8
+
+Put it with the other trailers, above `Co-developed-by:`/`Signed-off-by:`. Use
+the model actually used, not that literal string. His v9 cover-letter wording is
+still worth reading if a cover letter is ever needed:
 
 > Per Documentation/process/coding-assistants.rst: this work was developed with
 > help from an AI coding assistant (Claude Code, by Anthropic). I used it to help
