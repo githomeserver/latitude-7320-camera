@@ -13,6 +13,14 @@ requirements)".
 
 ## Before you start
 
+**You need Ubuntu 26.04 or newer**, or a libcamera 0.7.x source tree supplied by
+hand. `build-libcamera.sh` fetches the source the distro ships, and Ubuntu 24.04
+ships libcamera **0.2.0** - which has no software ISP at all, so none of the
+files this project patches exist in it. That is not a subtle failure but it used
+to look like one, and it cost the reporter of issue #2 an evening. The build now
+checks the version and stops with an explanation.
+
+
 **Check this is actually your machine.** The board data matches on DMI strings, so
 it does nothing at all on anything else:
 

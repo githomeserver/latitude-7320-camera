@@ -69,13 +69,55 @@ build)
     fi
     cd libcamera-src
 
+        # Refuse an unusable source tree rather than failing four steps later.
+        #
+        # apt-get source fetches whatever the DISTRO ships, which on Ubuntu 24.04
+        # is libcamera 0.2.0 - a tree with no software ISP at all, so no
+        # src/ipa/simple/algorithms/ and no sensor/camera_sensor_properties.cpp.
+        # Every patch step below then either misreported the missing file as
+        # "already applied" or died in a Python traceback, several screens after
+        # the real problem. Reported as issue #2, by someone who had to work out
+        # for themselves that the distro source was too old.
+        #
+        # The layout this needs arrived in 0.7.x, which is what 26.04 ships, and
+        # libcamera-rgbir/debayer_cpu.patch is generated against the v0.7.0 tag.
+        LC_VER=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\''\([0-9.]*\)'\''.*/\1/p" meson.build | head -1)
+        [ -n "$LC_VER" ] || LC_VER=unknown
+        echo "== libcamera source version: $LC_VER =="
+        case "${LC_VER%.*}" in
+            0.7|0.8|0.9|1.*) ;;
+            *)
+                echo "ERROR: this needs libcamera 0.7.x; the source here is $LC_VER." >&2
+                echo "       apt-get source fetches what the distro ships, and 0.7.x" >&2
+                echo "       arrives with Ubuntu 26.04. On 24.04 you get 0.2.0, which" >&2
+                echo "       has no software ISP - none of the files patched below" >&2
+                echo "       exist in it. Upgrade, or supply a v0.7.0 checkout:" >&2
+                echo "         git clone https://git.libcamera.org/libcamera/libcamera.git $WORK/libcamera-src" >&2
+                echo "         git -C $WORK/libcamera-src checkout v0.7.0" >&2
+                exit 1 ;;
+        esac
+
+        for f in src/ipa/simple/algorithms/awb.cpp \
+                 src/libcamera/sensor/camera_sensor_properties.cpp; do
+            [ -f "$f" ] || { echo "ERROR: $f is missing - the source layout is not 0.7.x." >&2
+                             exit 1; }
+        done
+
     echo
     echo "== applying the AWB clamp patch =="
     if grep -q 'sum.g() / 4 ? 4.0f' src/ipa/simple/algorithms/awb.cpp; then
         patch -p1 --forward < "$PATCHFILE"
         echo "   applied"
+    elif patch -p1 --dry-run --reverse --force < "$PATCHFILE" >/dev/null 2>&1; then
+        echo "   already applied"
     else
-        echo "   already applied (or the source differs - check manually)"
+        # Neither the unpatched marker nor a cleanly reversible patch. Reporting
+        # "already applied (or the source differs)" here treated a tree that does
+        # not match at all as success, which is how issue #2 got several screens
+        # past the real problem.
+        echo "ERROR: awb.cpp matches neither the expected original nor the" >&2
+        echo "       patched form - this source tree is not what is expected." >&2
+        exit 1
     fi
     grep -n -A10 'Calculate red and blue gains' src/ipa/simple/algorithms/awb.cpp | sed 's/^/   /'
     if grep -q '4.0f' src/ipa/simple/algorithms/awb.cpp; then
