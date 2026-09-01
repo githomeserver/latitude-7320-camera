@@ -78,7 +78,7 @@ echo "== dropping any previous build =="
 for pv in $OLD_PKGS; do
     if dkms status -m "${pv%%/*}" -v "${pv##*/}" 2>/dev/null | grep -q .; then
         echo "   removing $pv"
-        # A legacy package that will not remove should not block a fresh
+            # A legacy package that will not remove should not block a fresh
             # install. remove_pkg leaves its source in place on failure, so
             # continuing cannot strand a registration - it only means one old
             # package is still listed, and it has already said so.
