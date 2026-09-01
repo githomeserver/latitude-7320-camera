@@ -183,8 +183,9 @@ assuming a credential problem.
 
 Recipients came from `scripts/get_maintainer.pl`; full list in `upstream/SENDING.md`.
 
-**SAKARI REVIEWED v2 ON 2026-09-01** (`20260816070108.9308-1-adee.sahan@gmail.com`
-thread). Constructive, not a rejection. Four things, all of which define v3:
+**SAKARI REVIEWED v2 ON 2026-09-01 10:24 UTC**
+(`https://lore.kernel.org/platform-driver-x86/apanzqDR-4UbJZ5F@kekkonen.localdomain/`,
+Message-ID `apanzqDR-4UbJZ5F@kekkonen.localdomain` for `--in-reply-to`). Constructive, not a rejection. Four things, all of which define v3:
 
 1. **"The commit message is too big, please keep only the essentials."**
 2. **VIO: reuse the shared init_data.** He points at Thierry Chatard's v10 5/8
