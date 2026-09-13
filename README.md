@@ -523,10 +523,11 @@ sudo tools/install-rgbir.sh build       # RGB-IR pre-pass + denoise into the sou
 sudo tools/install-rgbir.sh enable      # installs the patched libcamera
 sudo tools/install-tuning.sh
 
-# 4. colour matrix - Intel's tuning for this exact sensor, extracted from the
-#    .aiqb by tools/extract-ccm.py (see docs/intel-ccm-ov5678.md). D50 matches a
-#    ~4800 K LED; the doc lists the other illuminants.
-sudo tools/install-ccm.sh 1.81986320,-0.77644408,-0.04341904,-0.12864910,1.56615222,-0.43750316,-0.13377318,-0.78377765,1.91755080
+# 4. colour matrices - Intel's tuning for this exact sensor, extracted from the
+#    .aiqb by tools/extract-ccm.py (see docs/intel-ccm-ov5678.md). Installs all
+#    seven illuminants; libcamera blends the two nearest to whatever the AWB
+#    reports, so a tungsten lamp and daylight no longer share one compromise.
+sudo tools/install-ccm.sh intel
 
 # 5. lens shading, measured from YOUR unit: hold plain white paper over the lens
 sudo tools/measure-lens-shading.sh --raw     # writes data/lens-shading-measured-raw.bin
@@ -550,6 +551,9 @@ neutral. Blue on the white patch goes **18 -> 180**. Colours are still flat.
 
 **After step 4** - the colour matrix. Subtle but real: greens and magentas
 separate, mean saturation across the six primary patches goes 29.5% -> 34.7%.
+(The picture below was taken with Intel's D50 matrix alone, which is what step 4
+used to install; the seven-matrix set gives the same result under this ~4800 K
+light and a better one away from it.)
 
 ![After the colour matrix](docs/images/03-ccm.jpg)
 
@@ -788,6 +792,14 @@ when nothing in the clipped list is a neutral patch.
 
 ### Deriving your own matrix
 
+Mostly of historical interest now that Intel's own matrices for this module are
+extracted (`docs/intel-ccm-ov5678.md`) - a least-squares fit against a chart
+under one lamp is a worse answer than seven matrices measured by the vendor.
+Still useful for the saturation sweep, and for checking a claim about the
+pipeline against a chart. Note a matrix installed this way needs `CT=` set to
+what the AWB reports under the light it was fitted in, or it will be labelled
+3100 and blend wrongly against Intel's set.
+
 ```sh
 # 1. hold WHITE PRINTER PAPER filling the centre of the frame, then capture
 tools/ccm-preview.sh              # refuses frames it cannot tune from
@@ -939,7 +951,7 @@ differs:
 | `ccm-preview.sh` | capture a frame and render it through candidate matrices; refuses unusable frames |
 | `try-ccm.py` | the renderer behind it; `--matrix <spec>` prints coefficients |
 | `find-loopback.sh` | print the v4l2loopback node, matched on driver name |
-| `install-ccm.sh` | install a matrix and/or raise the black level |
+| `install-ccm.sh` | install a matrix - or `intel`, all seven - and/or raise the black level |
 | `refresh-debayer-patch.sh` | regenerate `libcamera-rgbir/debayer_cpu.patch` from the build tree; `--check` reports drift |
 | `set-saturation.sh` | the live saturation knob (needs a CCM installed first) |
 | `check-rgbir.sh` | prove the mosaic is 4x4 RGB-IR, not 2x2 Bayer, from raw pixels |
