@@ -1,5 +1,5 @@
---- a/src/libcamera/software_isp/debayer_cpu.h	2026-01-29 23:17:26.000000000 +1100
-+++ b/src/libcamera/software_isp/debayer_cpu.h	2026-08-23 18:21:56.890045534 +1000
+--- a/src/libcamera/software_isp/debayer_cpu.h
++++ b/src/libcamera/software_isp/debayer_cpu.h
 @@ -23,6 +23,8 @@
  #include "libcamera/internal/software_isp/swstats_cpu.h"
  
@@ -54,9 +54,9 @@
  	std::unique_ptr<SwStatsCpu> stats_;
  	std::vector<uint8_t> lineBuffers_[kMaxLineBuffers];
  	unsigned int lineBufferLength_;
---- a/src/libcamera/software_isp/debayer_cpu.cpp	2026-01-29 23:17:26.000000000 +1100
-+++ b/src/libcamera/software_isp/debayer_cpu.cpp	2026-08-23 18:36:14.158264565 +1000
-@@ -9,9 +9,14 @@
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -9,9 +9,15 @@
   * CPU based debayering class
   */
  
@@ -67,11 +67,12 @@
  #include "debayer_cpu.h"
  
  #include <algorithm>
++#include <chrono>
 +#include <cmath>
  #include <stdlib.h>
  #include <sys/ioctl.h>
  #include <time.h>
-@@ -19,6 +24,8 @@
+@@ -19,6 +25,8 @@
  
  #include <linux/dma-buf.h>
  
@@ -80,7 +81,7 @@
  #include <libcamera/formats.h>
  
  #include "libcamera/internal/bayer_format.h"
-@@ -73,9 +80,34 @@
+@@ -73,9 +81,34 @@
  		const CcmColumn &blue = blueCcm_[b_];   \
  		const CcmColumn &green = greenCcm_[g_]; \
  		const CcmColumn &red = redCcm_[r_];     \
@@ -118,7 +119,7 @@
  	} else {                                        \
  		*dst++ = blue_[b_];                     \
  		*dst++ = green_[g_];                    \
-@@ -499,6 +531,68 @@
+@@ -499,6 +532,68 @@
  
  	inputConfig_.stride = inputCfg.stride;
  
@@ -187,7 +188,7 @@
  	if (outputCfgs.size() != 1) {
  		LOG(Debayer, Error)
  			<< "Unsupported number of output streams: "
-@@ -543,6 +637,55 @@
+@@ -543,6 +638,55 @@
  	window_.height = outputCfg.size.height;
  
  	/*
@@ -243,7 +244,7 @@
  	 * Set the stats window to the whole processed window. Its coordinates are
  	 * relative to the debayered area since debayering passes only the part of
  	 * data to be processed to the stats; see SwStatsCpu::setWindow.
-@@ -753,8 +896,13 @@
+@@ -753,8 +897,13 @@
  void DebayerCpu::updateGammaTable(DebayerParams &params)
  {
  	const RGB<float> blackLevel = params.blackLevel;
@@ -259,7 +260,7 @@
  	const float gamma = params.gamma;
  	const float contrastExp = params.contrastExp;
  
-@@ -795,6 +943,41 @@
+@@ -795,6 +944,41 @@
  	const unsigned int gammaTableSize = gammaTable_.size();
  	const double div = static_cast<double>(kRGBLookupSize) / gammaTableSize;
  	if (ccmEnabled_) {
@@ -301,7 +302,7 @@
  		if (gammaUpdateNeeded ||
  		    matrixChanged(params.combinedMatrix, params_.combinedMatrix)) {
  			auto &red = swapRedBlueGains_ ? blueCcm_ : redCcm_;
-@@ -803,16 +986,33 @@
+@@ -803,16 +987,33 @@
  			const unsigned int redIndex = swapRedBlueGains_ ? 2 : 0;
  			const unsigned int greenIndex = 1;
  			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
@@ -344,7 +345,7 @@
  				gammaLut_[i] = gammaTable_[i / div];
  			}
  		}
-@@ -825,9 +1025,23 @@
+@@ -825,9 +1026,23 @@
  			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
  				/* Apply gamma after gain! */
  				const RGB<float> lutGains = (gains * i / div).min(gammaTableSize - 1);
@@ -371,10 +372,111 @@
  			}
  		}
  	}
-@@ -868,10 +1082,236 @@
+@@ -842,9 +1057,96 @@
+ 	params_ = params;
+ }
+ 
++/*
++ * Per-stage timing, behind RGBIR_TIMING.
++ *
++ * libcamera's own Benchmark times only the debayer loop, which on this
++ * pipeline is a minority of the work - the RGB-IR pre-pass runs before it and
++ * is not counted. Reading that number as the frame cost understates it by
++ * about half, which has misled this project more than once. These timers cover
++ * every stage between one frame arriving and the next.
++ */
++namespace {
++
++class StageTimer
++{
++public:
++	void add(unsigned int stage, double ms) { sum_[stage] += ms; }
++	/*
++	 * Called on entry, so it measures the whole frame period - including
++	 * whatever happens outside the stages below. The gap between the two is
++	 * the point of reporting both.
++	 */
++	void enter()
++	{
++		const auto now = std::chrono::steady_clock::now();
++		if (frames_)
++			period_ += std::chrono::duration<double, std::milli>(now - last_).count();
++		last_ = now;
++	}
++	void frame()
++	{
++		if (++frames_ < kReport)
++			return;
++		const double work = sum_[0] + sum_[1] + sum_[2];
++		LOG(Debayer, Info)
++			<< "timing over " << frames_ << " frames, ms/frame:"
++			<< " prepass " << sum_[0] / frames_
++			<< ", denoise " << sum_[1] / frames_
++			<< ", debayer+stats " << sum_[2] / frames_
++			<< ", other " << (period_ - work) / (frames_ - 1)
++			<< ", frame period " << period_ / (frames_ - 1);
++		frames_ = 0;
++		period_ = 0.0;
++		sum_[0] = sum_[1] = sum_[2] = 0.0;
++	}
++
++private:
++	static constexpr unsigned int kReport = 60;
++	double sum_[3] = { 0.0, 0.0, 0.0 };
++	double period_ = 0.0;
++	std::chrono::steady_clock::time_point last_;
++	unsigned int frames_ = 0;
++};
++
++StageTimer stageTimer;
++
++bool timingEnabled()
++{
++	static const bool on = utils::secure_getenv("RGBIR_TIMING") != nullptr;
++	return on;
++}
++
++class ScopedStage
++{
++public:
++	ScopedStage(unsigned int stage)
++		: stage_(stage), on_(timingEnabled())
++	{
++		if (on_)
++			t0_ = std::chrono::steady_clock::now();
++	}
++	~ScopedStage()
++	{
++		if (!on_)
++			return;
++		const auto dt = std::chrono::steady_clock::now() - t0_;
++		stageTimer.add(stage_, std::chrono::duration<double, std::milli>(dt).count());
++	}
++
++private:
++	unsigned int stage_;
++	bool on_;
++	std::chrono::steady_clock::time_point t0_;
++};
++
++} /* namespace */
++
+ void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output, DebayerParams params)
+ {
+ 	bench_.startFrame();
++	if (timingEnabled())
++		stageTimer.enter();
+ 
+ 	std::vector<DmaSyncer> dmaSyncers;
+ 
+@@ -868,10 +1170,246 @@
  
  	stats_->startFrame(frame);
  
+-	if (inputConfig_.patternSize.height == 2)
+-		process2(frame, in.planes()[0].data(), out.planes()[0].data());
+-	else
+-		process4(frame, in.planes()[0].data(), out.planes()[0].data());
 +	const uint8_t *srcData = in.planes()[0].data();
 +	if (rgbIr_) {
 +		/*
@@ -463,14 +565,18 @@
 +		rgbIr_->setChromaBlur(chromaBlur < 0 ? 0 : chromaBlur);
 +		rgbIr_->setSharpness(sharpness);
 +		const float irBefore = rgbIr_->effectiveIrSubtract();
-+		int ret = rgbIr_->convertSharp(srcData,
-+					       rgbIrInputSize_.width,
-+					       rgbIrInputSize_.height,
-+					       rgbIrSrcStride_,
-+					       rgbIrScratch_.data(),
-+					       rgbIrHalfStride_,
-+					       rgbIrOrder_,
-+					       shadingValid_ ? &shadingMap_ : nullptr);
++		int ret;
++		{
++			ScopedStage stagePrepass(0);
++			ret = rgbIr_->convertSharp(srcData,
++						   rgbIrInputSize_.width,
++						   rgbIrInputSize_.height,
++						   rgbIrSrcStride_,
++						   rgbIrScratch_.data(),
++						   rgbIrHalfStride_,
++						   rgbIrOrder_,
++						   shadingValid_ ? &shadingMap_ : nullptr);
++		}
 +		/*
 +		 * Report the adaptive coefficient only when it has actually
 +		 * moved, so a steady scene stays quiet and a lighting change is
@@ -506,6 +612,7 @@
 +				return e ? atoi(e) : 40;
 +			}();
 +			if (dnAlpha < 1.0f) {
++				ScopedStage stageDenoise(1);
 +				denoise_.configure(dnAlpha, (uint16_t)dnThr);
 +				/*
 +				 * Without the geometry the motion decision falls back
@@ -601,12 +708,15 @@
 +			LOG(Debayer, Error) << "RGB-IR conversion failed: " << ret;
 +	}
 +
- 	if (inputConfig_.patternSize.height == 2)
--		process2(frame, in.planes()[0].data(), out.planes()[0].data());
-+		process2(frame, srcData, out.planes()[0].data());
- 	else
--		process4(frame, in.planes()[0].data(), out.planes()[0].data());
-+		process4(frame, srcData, out.planes()[0].data());
++	{
++		ScopedStage stageDebayer(2);
++		if (inputConfig_.patternSize.height == 2)
++			process2(frame, srcData, out.planes()[0].data());
++		else
++			process4(frame, srcData, out.planes()[0].data());
++	}
++	if (timingEnabled())
++		stageTimer.frame();
  
  	metadata.planes()[0].bytesused = out.planes()[0].size();
  

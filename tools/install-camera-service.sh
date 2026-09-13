@@ -237,7 +237,16 @@ Environment=RGBIR_CHROMA_BLUR=$CHROMA_BLUR
 Environment=RGBIR_CCM_HIGHLIGHT=$CCM_HIGHLIGHT
 Environment="RGBIR_SHADING=$SHADING"
 Environment=LIBCAMERA_SOFTISP_MODE=cpu
-ExecStart=/usr/bin/gst-launch-1.0 -q libcamerasrc exposure-value=$EV$SAT_PROP ! video/x-raw,width=$WIDTH,height=$HEIGHT ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK
+# sync=false on the sink. GstBaseSink synchronises to the pipeline clock by
+# default, and libcamerasrc timestamps buffers with the sensor's capture time -
+# a 30 fps cadence - while the software ISP only delivers about 20. Every
+# buffer is therefore late, QoS starts dropping them, and the loopback saw
+# exactly half the frames the ISP produced: measured 10.37 fps against the
+# ISP's own 20.5. With sync=false the consumer sees 20.66 fps, i.e. everything
+# the ISP makes. A loopback has no presentation timeline to respect - it
+# republishes frames as fast as they arrive - so there is nothing to lose.
+
+ExecStart=/usr/bin/gst-launch-1.0 -q libcamerasrc exposure-value=$EV$SAT_PROP ! video/x-raw,width=$WIDTH,height=$HEIGHT ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK sync=false
 Restart=always
 RestartSec=2
 
@@ -256,7 +265,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/gst-launch-1.0 -q videotestsrc pattern=black ! video/x-raw,width=$WIDTH,height=$HEIGHT,framerate=1/1 ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK
+ExecStart=/usr/bin/gst-launch-1.0 -q videotestsrc pattern=black ! video/x-raw,width=$WIDTH,height=$HEIGHT,framerate=1/1 ! videoconvert ! video/x-raw,format=YUY2 ! v4l2sink device=$LOOPBACK sync=false
 Restart=always
 RestartSec=2
 Nice=10

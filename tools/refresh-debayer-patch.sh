@@ -21,7 +21,13 @@ set -eu
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$HERE/.."
 PATCHFILE="$REPO/libcamera-rgbir/debayer_cpu.patch"
-BUILD="${LIBCAMERA_SRC:-$HOME/.cache/libcamera-build/libcamera-src}/src/libcamera/software_isp"
+# Resolve the invoking user's home, not root's. Under sudo $HOME is /root and
+# the build tree is not there, which reports "no build tree" on a machine that
+# has one - the same trap build-libcamera.sh already sidesteps. Nothing here
+# needs root anyway: the build tree is world readable and the patch is written
+# into the repo.
+USER_HOME="$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)"
+BUILD="${LIBCAMERA_SRC:-${USER_HOME:-$HOME}/.cache/libcamera-build/libcamera-src}/src/libcamera/software_isp"
 UPSTREAM="${LIBCAMERA_UPSTREAM:-$REPO/../libcamera-upstream}"
 BASE="${LIBCAMERA_BASE:-v0.7.0}"
 FILES=(debayer_cpu.h debayer_cpu.cpp)
