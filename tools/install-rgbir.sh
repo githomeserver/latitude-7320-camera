@@ -54,7 +54,7 @@ build)
                        echo "       run tools/build-libcamera.sh build first" >&2; exit 1; }
 
     echo "== staging our sources =="
-    for f in rgbir_to_bayer.h rgbir_to_bayer.cpp temporal_denoise.h temporal_denoise.cpp; do
+    for f in thread_pool.h rgbir_to_bayer.h rgbir_to_bayer.cpp temporal_denoise.h temporal_denoise.cpp; do
         install -m644 "$REPO/libcamera-rgbir/$f" "$ISP/"
         echo "   $f"
     done
@@ -106,12 +106,19 @@ PY
                 echo
             }
         fi
-    elif patch -s -p4 -d "$ISP" < "$PATCH"; then
+    elif patch -s -p4 --dry-run -d "$ISP" < "$PATCH" >/dev/null 2>&1; then
+        patch -s -p4 -d "$ISP" < "$PATCH"
         echo "   applied"
     else
-        echo "ERROR: debayer_cpu.patch did not apply." >&2
-        echo "       The libcamera source is probably not v0.7.0. Regenerate with:" >&2
-        echo "         diff -u <v0.7.0 file> <working file>" >&2
+        # Dry run first, always. Going straight to a real apply here half
+        # applied the patch onto a tree that already carried newer work: three
+        # hunks landed, eight were rejected, and debayer_cpu.cpp was left in a
+        # state that belonged to neither version. patch(1) leaves a .orig, but
+        # only luck made that recoverable.
+        echo "ERROR: debayer_cpu.patch applies neither forward nor in reverse." >&2
+        echo "       Either the libcamera source is not v0.7.0, or the build" >&2
+        echo "       tree carries changes the committed patch does not - check" >&2
+        echo "       with: tools/refresh-debayer-patch.sh --check" >&2
         exit 1
     fi
 

@@ -56,7 +56,7 @@
  	unsigned int lineBufferLength_;
 --- a/src/libcamera/software_isp/debayer_cpu.cpp
 +++ b/src/libcamera/software_isp/debayer_cpu.cpp
-@@ -9,9 +9,15 @@
+@@ -9,9 +9,16 @@
   * CPU based debayering class
   */
  
@@ -68,11 +68,12 @@
  
  #include <algorithm>
 +#include <chrono>
++#include <thread>
 +#include <cmath>
  #include <stdlib.h>
  #include <sys/ioctl.h>
  #include <time.h>
-@@ -19,6 +25,8 @@
+@@ -19,6 +26,8 @@
  
  #include <linux/dma-buf.h>
  
@@ -81,7 +82,7 @@
  #include <libcamera/formats.h>
  
  #include "libcamera/internal/bayer_format.h"
-@@ -73,9 +81,34 @@
+@@ -73,9 +82,34 @@
  		const CcmColumn &blue = blueCcm_[b_];   \
  		const CcmColumn &green = greenCcm_[g_]; \
  		const CcmColumn &red = redCcm_[r_];     \
@@ -119,7 +120,7 @@
  	} else {                                        \
  		*dst++ = blue_[b_];                     \
  		*dst++ = green_[g_];                    \
-@@ -499,6 +532,68 @@
+@@ -499,6 +533,68 @@
  
  	inputConfig_.stride = inputCfg.stride;
  
@@ -188,7 +189,7 @@
  	if (outputCfgs.size() != 1) {
  		LOG(Debayer, Error)
  			<< "Unsupported number of output streams: "
-@@ -543,6 +638,55 @@
+@@ -543,6 +639,55 @@
  	window_.height = outputCfg.size.height;
  
  	/*
@@ -244,7 +245,7 @@
  	 * Set the stats window to the whole processed window. Its coordinates are
  	 * relative to the debayered area since debayering passes only the part of
  	 * data to be processed to the stats; see SwStatsCpu::setWindow.
-@@ -753,8 +897,13 @@
+@@ -753,8 +898,13 @@
  void DebayerCpu::updateGammaTable(DebayerParams &params)
  {
  	const RGB<float> blackLevel = params.blackLevel;
@@ -260,7 +261,7 @@
  	const float gamma = params.gamma;
  	const float contrastExp = params.contrastExp;
  
-@@ -795,6 +944,41 @@
+@@ -795,6 +945,41 @@
  	const unsigned int gammaTableSize = gammaTable_.size();
  	const double div = static_cast<double>(kRGBLookupSize) / gammaTableSize;
  	if (ccmEnabled_) {
@@ -302,7 +303,7 @@
  		if (gammaUpdateNeeded ||
  		    matrixChanged(params.combinedMatrix, params_.combinedMatrix)) {
  			auto &red = swapRedBlueGains_ ? blueCcm_ : redCcm_;
-@@ -803,16 +987,33 @@
+@@ -803,16 +988,33 @@
  			const unsigned int redIndex = swapRedBlueGains_ ? 2 : 0;
  			const unsigned int greenIndex = 1;
  			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
@@ -345,7 +346,7 @@
  				gammaLut_[i] = gammaTable_[i / div];
  			}
  		}
-@@ -825,9 +1026,23 @@
+@@ -825,9 +1027,23 @@
  			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
  				/* Apply gamma after gain! */
  				const RGB<float> lutGains = (gains * i / div).min(gammaTableSize - 1);
@@ -372,7 +373,7 @@
  			}
  		}
  	}
-@@ -842,9 +1057,96 @@
+@@ -842,9 +1058,96 @@
  	params_ = params;
  }
  
@@ -469,7 +470,7 @@
  
  	std::vector<DmaSyncer> dmaSyncers;
  
-@@ -868,10 +1170,246 @@
+@@ -868,10 +1171,266 @@
  
  	stats_->startFrame(frame);
  
@@ -564,6 +565,26 @@
 +		}();
 +		rgbIr_->setChromaBlur(chromaBlur < 0 ? 0 : chromaBlur);
 +		rgbIr_->setSharpness(sharpness);
++		/*
++		 * Split the pre-pass across cores. It is the largest single
++		 * cost in the frame - 27.8 ms of a 48.8 ms period measured here
++		 * - and the whole ISP runs on one thread, so the other cores sit
++		 * idle while it works.
++		 *
++		 * Default to the physical core count, not hardware_concurrency().
++		 * The pass is limited by memory bandwidth as much as by
++		 * arithmetic and two SMT siblings share one set of load/store
++		 * units, so the extra logical CPUs buy little; measured here,
++		 * see RGBIR_THREADS in the README.
++		 */
++		static const unsigned int threads = []() {
++			const char *e = utils::secure_getenv("RGBIR_THREADS");
++			if (e)
++				return (unsigned int)std::max(1, atoi(e));
++			const unsigned int hw = std::thread::hardware_concurrency();
++			return hw > 2 ? hw / 2 : 1;
++		}();
++		rgbIr_->setThreads(threads);
 +		const float irBefore = rgbIr_->effectiveIrSubtract();
 +		int ret;
 +		{

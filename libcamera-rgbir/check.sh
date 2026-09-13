@@ -1,10 +1,26 @@
 #!/bin/bash
-# Build RgbIrToBayer and check it against the Python reference on a real frame.
+# Build RgbIrToBayer and check it.
 #   ./check.sh [/tmp/rgbir-raw.bin]
+#
+# Two stages. The threading identity test needs nothing and always runs; the
+# comparison against the Python reference needs a captured raw frame and is
+# skipped without one, rather than refusing to run any check at all.
 set -eu
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "== threading changes no pixel =="
+g++ -std=c++17 -O2 -Wall -Wextra -o /tmp/test-threads \
+    "$HERE/test-threads.cpp" "$HERE/rgbir_to_bayer.cpp" -lpthread
+/tmp/test-threads | tail -3
+echo
+
 RAW="${1:-/tmp/rgbir-raw.bin}"
-[ -f "$RAW" ] && [ -f "$RAW.txt" ] || { echo "need $RAW and $RAW.txt (run tools/rgbir-proof.sh)" >&2; exit 1; }
+if ! { [ -f "$RAW" ] && [ -f "$RAW.txt" ]; }; then
+    echo "== reference comparison: skipped =="
+    echo "   needs $RAW and $RAW.txt - capture one with tools/rgbir-proof.sh"
+    exit 0
+fi
+echo "== against the Python reference =="
 g++ -std=c++17 -O2 -Wall -Wextra -o /tmp/test_rgbir "$HERE/test_rgbir.cpp" "$HERE/rgbir_to_bayer.cpp"
 read -r W H STRIDE _ < "$RAW.txt"
 BLACK=$(sed -n '2p' "$RAW.txt" | awk '{print $2}')

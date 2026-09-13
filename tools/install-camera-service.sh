@@ -88,6 +88,15 @@ DENOISE_THR="${DENOISE_THR:-40}"
 # visible while halving the noise that dominates the picture. Green is untouched.
 CHROMA_BLUR="${CHROMA_BLUR:-1}"
 
+# Threads for the RGB-IR pre-pass. Empty means let the library decide, which is
+# the physical core count - see RGBIR_THREADS in the README for the measured
+# sweep. Written into the unit only when set, so the default can move without
+# every installed machine pinning an old number.
+THREADS="${THREADS:-}"
+case "$THREADS" in
+    ''|*[!0-9]*) [ -z "$THREADS" ] || { echo "ERROR: THREADS must be an integer, got '$THREADS'" >&2; exit 1; } ;;
+esac
+
 # CCM highlight rolloff. Near saturation the colour matrix is faded toward the
 # white-balanced (no CCM) value so a clipped highlight stays white instead of
 # going magenta. This is the max-channel fade in debayer_cpu's STORE_PIXEL,
@@ -229,7 +238,8 @@ Environment=GST_PLUGIN_PATH=/usr/local/lib/x86_64-linux-gnu/gstreamer-1.0
 # with colour ones and destroys the 4x4 mosaic before it can be read.
 Environment=LIBCAMERA_RGBIR=1
 Environment=RGBIR_IRSUB=$IRSUB
-Environment=RGBIR_IRSUB_ADAPT=$IRSUB_ADAPT
+${THREADS:+Environment=RGBIR_THREADS=$THREADS
+}Environment=RGBIR_IRSUB_ADAPT=$IRSUB_ADAPT
 Environment=RGBIR_SHARPNESS=$SHARPNESS
 Environment=RGBIR_DENOISE=$DENOISE
 Environment=RGBIR_DENOISE_THR=$DENOISE_THR

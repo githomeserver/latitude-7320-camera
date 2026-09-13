@@ -102,7 +102,7 @@ void RgbIrToBayer::irStatsReset() const
 	irDiffCount_ = 0;
 }
 
-void RgbIrToBayer::irStatsAccumulate(const int32_t cell[16]) const
+void RgbIrToBayer::irStatsAccumulate(const int32_t cell[16], IrStats &stats) const
 {
 	const uint8_t n = counts_[Infrared];
 	if (n < 2)
@@ -128,8 +128,8 @@ void RgbIrToBayer::irStatsAccumulate(const int32_t cell[16]) const
 	 * for, so the bias has to go rather than be tolerated.
 	 */
 	for (uint8_t k = 0; k < n; k++)
-		irSum_ += cell[positions_[Infrared][k]];
-	irSamples_ += n;
+		stats.sum += cell[positions_[Infrared][k]];
+	stats.samples += n;
 
 	/*
 	 * Pair k with k+1. positions_ is filled in raster order, so an even k
@@ -140,9 +140,18 @@ void RgbIrToBayer::irStatsAccumulate(const int32_t cell[16]) const
 			    cell[positions_[Infrared][k + 1]];
 		if (d < 0)
 			d = -d;
-		irDiffHist_[d < (int32_t)kIrHistBins ? d : kIrHistBins - 1]++;
-		irDiffCount_++;
+		stats.diffHist[d < (int32_t)kIrHistBins ? d : kIrHistBins - 1]++;
+		stats.diffCount++;
 	}
+}
+
+void RgbIrToBayer::irStatsMerge(const IrStats &stats) const
+{
+	irSum_ += stats.sum;
+	irSamples_ += stats.samples;
+	irDiffCount_ += stats.diffCount;
+	for (unsigned int i = 0; i < kIrHistBins; i++)
+		irDiffHist_[i] += stats.diffHist[i];
 }
 
 void RgbIrToBayer::irBuildTable() const
@@ -226,7 +235,8 @@ void RgbIrToBayer::irStatsFinish() const
 void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 				   unsigned int cols, unsigned int cy,
 				   unsigned int rows, const ShadingMap *shading,
-				   uint16_t G[4], uint16_t &R, uint16_t &B) const
+				   uint16_t G[4], uint16_t &R, uint16_t &B,
+				   IrStats &stats) const
 {
 	int32_t cell[16];
 	int32_t cellMax = 0;
@@ -252,7 +262,7 @@ void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 
 	/* One cell in sixteen feeds the adaptive coefficient. */
 	if (irAdaptive_ && irSubtract_ > 0.0f && !(cx & 3) && !(cy & 3))
-		irStatsAccumulate(cell);
+		irStatsAccumulate(cell, stats);
 
 	/*
 	 * Green per 2x2 quadrant. Derived from positions_ rather than assumed,
@@ -327,6 +337,92 @@ void RgbIrToBayer::cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 	B = clamp(b + blackLevel_);
 }
 
+void RgbIrToBayer::convertBand(const uint8_t *src, unsigned int srcStride,
+			       uint16_t *dst, unsigned int dstPitch,
+			       unsigned int cols, unsigned int rows,
+			       unsigned int cyBegin, unsigned int cyEnd,
+			       Order order, const ShadingMap *shading,
+			       bool blurChroma, IrStats &stats) const
+{
+	for (unsigned int cy = cyBegin; cy < cyEnd; cy++) {
+		const uint8_t *lines[4];
+		for (unsigned int i = 0; i < 4; i++)
+			lines[i] = src + (cy * 4 + i) * srcStride;
+
+		uint16_t *out0 = dst + (cy * 2) * dstPitch;
+		uint16_t *out1 = out0 + dstPitch;
+
+		for (unsigned int cx = 0; cx < cols; cx++) {
+			uint16_t G[4], R, B;
+			cellValuesSharp(lines, cx, cols, cy, rows, shading, G, R, B,
+					stats);
+
+			/*
+			 * The quad's green slots sit at its top-left and
+			 * bottom-right, which is exactly where the cell's
+			 * top-left and bottom-right quadrants are. The other
+			 * two quadrant greens have no slot in a 2x2 Bayer quad
+			 * and are necessarily dropped.
+			 */
+			out0[cx * 2 + 0] = G[0];
+			out1[cx * 2 + 1] = G[3];
+
+			if (blurChroma) {
+				chromaR_[(size_t)cy * cols + cx] = R;
+				chromaB_[(size_t)cy * cols + cx] = B;
+			} else {
+				const uint16_t t1 = order == Order::GRBG ? R : B;
+				const uint16_t b0 = order == Order::GRBG ? B : R;
+				out0[cx * 2 + 1] = t1;
+				out1[cx * 2 + 0] = b0;
+			}
+		}
+	}
+}
+
+void RgbIrToBayer::blurBand(uint16_t *dst, unsigned int dstPitch,
+			    unsigned int cols, unsigned int cyBegin,
+			    unsigned int cyEnd, unsigned int cyLow,
+			    unsigned int cyHigh, Order order) const
+{
+	/*
+	 * Box average over a (2r+1)^2 cell neighbourhood, clamped to the
+	 * converted band so it never reads rows this frame did not fill.
+	 *
+	 * cyLow/cyHigh are the whole converted band, not this thread's slice.
+	 * Clamping to the slice instead would make every band edge behave like
+	 * a frame edge and leave a seam across the picture at each one.
+	 */
+	const int r = (int)chromaBlur_;
+	for (unsigned int cy = cyBegin; cy < cyEnd; cy++) {
+		uint16_t *out0 = dst + (cy * 2) * dstPitch;
+		uint16_t *out1 = out0 + dstPitch;
+		const int y0 = std::max((int)cyLow, (int)cy - r);
+		const int y1 = std::min((int)cyHigh - 1, (int)cy + r);
+
+		for (unsigned int cx = 0; cx < cols; cx++) {
+			const int x0 = std::max(0, (int)cx - r);
+			const int x1 = std::min((int)cols - 1, (int)cx + r);
+			uint32_t sr = 0, sb = 0;
+			unsigned int n = 0;
+			for (int y = y0; y <= y1; y++) {
+				const size_t row = (size_t)y * cols;
+				for (int x = x0; x <= x1; x++) {
+					sr += chromaR_[row + x];
+					sb += chromaB_[row + x];
+					n++;
+				}
+			}
+			const uint16_t R = (uint16_t)(sr / n);
+			const uint16_t B = (uint16_t)(sb / n);
+			const uint16_t t1 = order == Order::GRBG ? R : B;
+			const uint16_t b0 = order == Order::GRBG ? B : R;
+			out0[cx * 2 + 1] = t1;
+			out1[cx * 2 + 0] = b0;
+		}
+	}
+}
+
 int RgbIrToBayer::convertSharp(const uint8_t *src, unsigned int srcWidth,
 			       unsigned int srcHeight, unsigned int srcStride,
 			       uint16_t *dst, unsigned int dstStride,
@@ -368,73 +464,52 @@ int RgbIrToBayer::convertSharp(const uint8_t *src, unsigned int srcWidth,
 		chromaB_.assign((size_t)cols * rows, 0);
 	}
 
-	for (unsigned int cy = cy0; cy < cy1; cy++) {
-		const uint8_t *lines[4];
-		for (unsigned int i = 0; i < 4; i++)
-			lines[i] = src + (cy * 4 + i) * srcStride;
+	/*
+	 * One band per thread, split by cell row. Equal sized rather than work
+	 * stealing: every cell costs the same here, so the bands finish
+	 * together and a scheduler would only add synchronisation.
+	 */
+	const unsigned int active = cy1 > cy0 ? cy1 - cy0 : 0;
+	unsigned int bands = pool_ ? pool_->size() : 1;
+	if (bands > active)
+		bands = active ? active : 1;
 
-		uint16_t *out0 = dst + (cy * 2) * dstPitch;
-		uint16_t *out1 = out0 + dstPitch;
+	std::vector<IrStats> stats(bands);
+	auto bandRange = [&](unsigned int b, unsigned int &begin, unsigned int &end) {
+		begin = cy0 + active * b / bands;
+		end = cy0 + active * (b + 1) / bands;
+	};
 
-		for (unsigned int cx = 0; cx < cols; cx++) {
-			uint16_t G[4], R, B;
-			cellValuesSharp(lines, cx, cols, cy, rows, shading, G, R, B);
+	auto pass1 = [&](unsigned int b) {
+		unsigned int begin, end;
+		bandRange(b, begin, end);
+		convertBand(src, srcStride, dst, dstPitch, cols, rows,
+			    begin, end, order, shading, blurChroma, stats[b]);
+	};
 
-			/*
-			 * The quad's green slots sit at its top-left and
-			 * bottom-right, which is exactly where the cell's
-			 * top-left and bottom-right quadrants are. The other
-			 * two quadrant greens have no slot in a 2x2 Bayer quad
-			 * and are necessarily dropped.
-			 */
-			out0[cx * 2 + 0] = G[0];
-			out1[cx * 2 + 1] = G[3];
+	if (pool_ && bands > 1)
+		pool_->run(bands, pass1);
+	else
+		pass1(0);
 
-			if (blurChroma) {
-				chromaR_[(size_t)cy * cols + cx] = R;
-				chromaB_[(size_t)cy * cols + cx] = B;
-			} else {
-				const uint16_t t1 = order == Order::GRBG ? R : B;
-				const uint16_t b0 = order == Order::GRBG ? B : R;
-				out0[cx * 2 + 1] = t1;
-				out1[cx * 2 + 0] = b0;
-			}
-		}
-	}
+	for (const IrStats &st : stats)
+		irStatsMerge(st);
 
 	if (blurChroma) {
 		/*
-		 * Box average over a (2r+1)^2 cell neighbourhood, clamped to the
-		 * converted band so it never reads rows this frame did not fill.
+		 * Separate pass, and therefore after a barrier: the box average
+		 * reads cell rows this thread did not write.
 		 */
-		const int r = (int)chromaBlur_;
-		for (unsigned int cy = cy0; cy < cy1; cy++) {
-			uint16_t *out0 = dst + (cy * 2) * dstPitch;
-			uint16_t *out1 = out0 + dstPitch;
-			const int y0 = std::max((int)cy0, (int)cy - r);
-			const int y1 = std::min((int)cy1 - 1, (int)cy + r);
+		auto pass2 = [&](unsigned int b) {
+			unsigned int begin, end;
+			bandRange(b, begin, end);
+			blurBand(dst, dstPitch, cols, begin, end, cy0, cy1, order);
+		};
 
-			for (unsigned int cx = 0; cx < cols; cx++) {
-				const int x0 = std::max(0, (int)cx - r);
-				const int x1 = std::min((int)cols - 1, (int)cx + r);
-				uint32_t sr = 0, sb = 0;
-				unsigned int n = 0;
-				for (int y = y0; y <= y1; y++) {
-					const size_t row = (size_t)y * cols;
-					for (int x = x0; x <= x1; x++) {
-						sr += chromaR_[row + x];
-						sb += chromaB_[row + x];
-						n++;
-					}
-				}
-				const uint16_t R = (uint16_t)(sr / n);
-				const uint16_t B = (uint16_t)(sb / n);
-				const uint16_t t1 = order == Order::GRBG ? R : B;
-				const uint16_t b0 = order == Order::GRBG ? B : R;
-				out0[cx * 2 + 1] = t1;
-				out1[cx * 2 + 0] = b0;
-			}
-		}
+		if (pool_ && bands > 1)
+			pool_->run(bands, pass2);
+		else
+			pass2(0);
 	}
 
 	irStatsFinish();

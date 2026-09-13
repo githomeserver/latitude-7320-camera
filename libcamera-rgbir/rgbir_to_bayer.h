@@ -10,7 +10,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <vector>
+
+#include "thread_pool.h"
 
 namespace libcamera {
 
@@ -142,6 +145,21 @@ public:
 
 private:
 	/*
+	 * Per-band IR statistics.
+	 *
+	 * Every field is a plain sum, so bands merge by adding. They have to be
+	 * per band rather than per object: convertSharp() runs its cell loop on
+	 * several threads, and accumulating straight into the members would be
+	 * a data race on every cell.
+	 */
+	struct IrStats {
+		int64_t sum = 0;
+		uint32_t samples = 0;
+		uint32_t diffCount = 0;
+		uint32_t diffHist[256] = {};
+	};
+
+	/*
 	 * Shared per-cell work: gather, average, shade, re-add the pedestal.
 	 * Green is returned per 2x2 quadrant of the cell, in raster order
 	 * (top-left, top-right, bottom-left, bottom-right).
@@ -149,7 +167,8 @@ private:
 	void cellValuesSharp(const uint8_t *lines[4], unsigned int cx,
 			     unsigned int cols, unsigned int cy,
 			     unsigned int rows, const ShadingMap *shading,
-			     uint16_t G[4], uint16_t &R, uint16_t &B) const;
+			     uint16_t G[4], uint16_t &R, uint16_t &B,
+			     IrStats &stats) const;
 
 	/* Positions within the cell holding each channel, and how many. */
 	uint8_t positions_[4][8];
@@ -187,6 +206,15 @@ private:
 	mutable std::vector<int32_t> irSubTable_;
 
 	/*
+	 * Created on first use and reused, so the threads are made once rather
+	 * than 30 times a second. Mutable because convertSharp() is const: it
+	 * does not change what the object represents, only how the work is
+	 * divided.
+	 */
+	unsigned int threads_ = 1;
+	mutable std::unique_ptr<ThreadPool> pool_;
+
+	/*
 	 * Scale an IR subtraction down as a cell approaches saturation.
 	 *
 	 * The model colour_true = colour_measured - k*IR holds only while
@@ -206,8 +234,20 @@ private:
 	int32_t irRolloff(int32_t d, int32_t cellMax) const;
 
 	void irStatsReset() const;
-	void irStatsAccumulate(const int32_t cell[16]) const;
+	void irStatsAccumulate(const int32_t cell[16], IrStats &stats) const;
+	void irStatsMerge(const IrStats &stats) const;
 	void irStatsFinish() const;
+
+	/* One band of the cell loop, and one band of the chroma blur. */
+	void convertBand(const uint8_t *src, unsigned int srcStride,
+			 uint16_t *dst, unsigned int dstPitch,
+			 unsigned int cols, unsigned int rows,
+			 unsigned int cyBegin, unsigned int cyEnd,
+			 Order order, const ShadingMap *shading,
+			 bool blurChroma, IrStats &stats) const;
+	void blurBand(uint16_t *dst, unsigned int dstPitch, unsigned int cols,
+		      unsigned int cyBegin, unsigned int cyEnd,
+		      unsigned int cyLow, unsigned int cyHigh, Order order) const;
 	void irBuildTable() const;
 
 	/* Amount to subtract from R, G and B for a cell whose IR average is \a ir */
@@ -235,6 +275,30 @@ public:
 	 * the more colour-accurate; saturation applied afterwards buys chroma
 	 * without that noise cost, so prefer a low k with more saturation.
 	 */
+	/**
+	 * \brief Split each frame across \a n threads, including the caller's
+	 * \param[in] n Total threads, 0 or 1 for the single-threaded path
+	 *
+	 * The work divides into horizontal bands of cell rows. Bands are
+	 * independent in the first pass - a cell reads only its own 4x4 source
+	 * block - and the chroma blur that follows is separated from it by a
+	 * barrier, so it can read across band boundaries safely. Neither pass
+	 * writes outside its own band.
+	 *
+	 * Beyond the physical core count this stops helping: the pass is
+	 * limited by memory bandwidth as much as arithmetic, and two SMT
+	 * siblings share one set of load/store units. Measure before assuming
+	 * hardware_concurrency() is the right number.
+	 */
+	void setThreads(unsigned int n)
+	{
+		const unsigned int want = n < 1 ? 1 : n;
+		if (want == threads_ && (pool_ || want == 1))
+			return;
+		threads_ = want;
+		pool_ = want > 1 ? std::make_unique<ThreadPool>(want) : nullptr;
+	}
+
 	void setIrSubtract(float k)
 	{
 		irSubtract_ = k;
