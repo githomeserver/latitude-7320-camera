@@ -1,0 +1,116 @@
+From: Sahan Nissanka <adee.sahan@gmail.com>
+Subject: [PATCH] libcamera: software_isp: Scale the stats sums to 8 bits
+
+SwStatsCpu accumulates SwIspStats::sum_ in the input's native bit depth,
+while the Y histogram in the same macro is scaled to 8 bits ("divide Y by 4
+for 10 -> 8 bpp value"). The sums' only consumer is the grey-world AWB, which
+subtracts a black level taken from IPAContext - and that level is 8 bit by
+construction: blc.cpp stores the tuning file's 16-bit value >> 8.
+
+So on 10-bit input the AWB subtracts 16 where it means 64, and on 12-bit
+input 16 where it means 256. Under-subtracting pulls both gain ratios toward
+1.0, which under-corrects red and blue and leaves a cast on any sensor whose
+native balance is not neutral.
+
+Measured on an OV5675 (Dell Latitude 7320 Detachable, IPU6, software ISP),
+10-bit, black level 4122 >> 8 = 16. Channel sums recomputed by hand from the
+same window and subsampling the stats use:
+
+  offset 16 (as shipped)   gain R 1.7883  gain B 1.9286
+  libcamera reported       gain R 1.78674 gain B 1.92709
+  offset 64 (correct)      gain R 1.9234  gain B 2.1026
+
+The reported gains match the wrong offset to four decimals, confirming the
+loop is converged and only the constant is wrong. The correct offset raises
+red 7.6% and blue 9.0%; the frame measured 6.3% and 8.1% short of neutral in
+linear light, so the error accounts for the whole cast. After the fix the
+same scene reads linear G/R 0.996 and G/B 1.003, against 1.063 and 1.081
+before - neutral to within 0.4%.
+
+The sums are the only field affected and have a single consumer, so scaling
+them at the point of accumulation is enough.
+
+Signed-off-by: Sahan Nissanka <adee.sahan@gmail.com>
+--- a/src/libcamera/software_isp/swstats_cpu.cpp
++++ b/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -184,10 +184,19 @@
+ 	yVal += b * kBlueYMul;             \
+ 	stats_.yHistogram[yVal * SwIspStats::kYHistogramSize / (256 * 256 * (div))]++;
+ 
+-#define SWSTATS_FINISH_LINE_STATS() \
+-	stats_.sum_.r() += sumR;    \
+-	stats_.sum_.g() += sumG;    \
+-	stats_.sum_.b() += sumB;
++/*
++ * Scale the sums down to 8 bits, the same way the histogram above already
++ * scales Y. Their only consumer is the grey-world AWB, which subtracts a black
++ * level taken from IPAContext - and that level is 8 bit by construction
++ * (blc.cpp stores the tuning file's 16-bit value >> 8). Accumulating 10- or
++ * 12-bit samples here left the two in different units, so the AWB subtracted
++ * 16 where it meant 64, under-corrected red and blue, and left a green cast on
++ * any sensor whose native balance is green dominant.
++ */
++#define SWSTATS_FINISH_LINE_STATS(div)  \
++	stats_.sum_.r() += sumR / (div);\
++	stats_.sum_.g() += sumG / (div);\
++	stats_.sum_.b() += sumB / (div);
+ 
+ void SwStatsCpu::statsBGGR8Line0(const uint8_t *src[])
+ {
+@@ -211,7 +220,7 @@
+ 		SWSTATS_ACCUMULATE_LINE_STATS(1)
+ 	}
+ 
+-	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_LINE_STATS(1)
+ }
+ 
+ void SwStatsCpu::statsBGGR10Line0(const uint8_t *src[])
+@@ -237,7 +246,7 @@
+ 		SWSTATS_ACCUMULATE_LINE_STATS(4)
+ 	}
+ 
+-	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_LINE_STATS(4)
+ }
+ 
+ void SwStatsCpu::statsBGGR12Line0(const uint8_t *src[])
+@@ -263,7 +272,7 @@
+ 		SWSTATS_ACCUMULATE_LINE_STATS(16)
+ 	}
+ 
+-	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_LINE_STATS(16)
+ }
+ 
+ void SwStatsCpu::statsBGGR10PLine0(const uint8_t *src[])
+@@ -289,7 +298,7 @@
+ 		SWSTATS_ACCUMULATE_LINE_STATS(1)
+ 	}
+ 
+-	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_LINE_STATS(1)
+ }
+ 
+ void SwStatsCpu::statsGBRG10PLine0(const uint8_t *src[])
+@@ -315,7 +324,7 @@
+ 		SWSTATS_ACCUMULATE_LINE_STATS(1)
+ 	}
+ 
+-	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_LINE_STATS(1)
+ }
+ 
+ /**
+--- a/include/libcamera/internal/software_isp/swisp_stats.h
++++ b/include/libcamera/internal/software_isp/swisp_stats.h
+@@ -29,6 +29,9 @@
+ 	bool valid;
+ 	/**
+ 	 * \brief Sums of colour channels of all the sampled pixels
++	 *
++	 * Scaled to 8 bits per sample regardless of the input bit depth, so
++	 * that they can be compared against an 8-bit black level.
+ 	 */
+ 	RGB<uint64_t> sum_;
+ 	/**

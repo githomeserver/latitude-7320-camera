@@ -419,6 +419,19 @@ stock libcamera 0.7.0             R/G 0.372   B/G 0.897    saturation 34%
   but `AwbAlgorithmBase::process()` clamps to `gainMax_`, derived from the
   `AwbAlgorithm<UQ<2, 8>>` the simple IPA instantiates — a ceiling of 3.996.
   → `upstream-libcamera/0001-ipa-simple-awb-Widen-*` widens it to `UQ<3, 8>`.
+- **The AWB subtracts the black level in the wrong units.** `SwStatsCpu`
+  accumulates `SwIspStats::sum_` in the input's own bit depth, while the Y
+  histogram beside it is scaled to 8 bits; `blc.level` is 8 bit by construction
+  (`blc.cpp` stores the tuning file's 16-bit value `>> 8`). So on 10-bit data
+  the AWB subtracts **16 where it means 64**, which pulls both ratios toward
+  1.0 and under-corrects red and blue. Recomputing the gains by hand from a
+  dumped frame gave 1.7883/1.9286 with the shipped offset against libcamera's
+  own 1.78674/1.92709 — a four-decimal match on the wrong constant — and
+  1.9234/2.1026 with the right one. Fixing it moved the same scene from linear
+  G/R 1.063, G/B 1.081 to 0.996, 1.003. Invisible until a strong CCM is
+  installed, because the matrix amplifies the residual along with the colour:
+  Intel's matrices took it to 1.154/1.191, which is when it reads as a green
+  cast. → `libcamera-patch/0002-soft-stats-scale-sums-to-8-bit.patch`
 - **The black level is guessed from the scene** when no tuning file exists —
   the 2nd percentile of the luminance histogram — and the AWB subtracts that
   guess before computing gains. Here the pedestal (64/1023) is about twice the

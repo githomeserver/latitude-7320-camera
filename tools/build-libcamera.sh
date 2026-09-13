@@ -27,7 +27,7 @@
 set -eu
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATCHFILE="$HERE/../libcamera-patch/0001-soft-awb-remove-hardcoded-4.0-gain-clamp.patch"
+PATCHDIR="$HERE/../libcamera-patch"
 USER_HOME="$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)"
 WORK="${USER_HOME:-$HOME}/.cache/libcamera-build"
 PREFIX=/usr/local
@@ -104,25 +104,41 @@ build)
         done
 
     echo
-    echo "== applying the AWB clamp patch =="
-    if grep -q 'sum.g() / 4 ? 4.0f' src/ipa/simple/algorithms/awb.cpp; then
-        patch -p1 --forward < "$PATCHFILE"
-        echo "   applied"
-    elif patch -p1 --dry-run --reverse --force < "$PATCHFILE" >/dev/null 2>&1; then
-        echo "   already applied"
-    else
-        # Neither the unpatched marker nor a cleanly reversible patch. Reporting
-        # "already applied (or the source differs)" here treated a tree that does
-        # not match at all as success, which is how issue #2 got several screens
-        # past the real problem.
-        echo "ERROR: awb.cpp matches neither the expected original nor the" >&2
-        echo "       patched form - this source tree is not what is expected." >&2
+    echo "== applying the libcamera patches =="
+    # Every patch in libcamera-patch/, in name order. This used to apply one
+    # named file; a second patch was then easy to add to the repo and forget to
+    # apply, which looks exactly like the fix not working.
+    for pf in "$PATCHDIR"/[0-9]*.patch; do
+        [ -f "$pf" ] || { echo "ERROR: no patches found in $PATCHDIR" >&2; exit 1; }
+        name="$(basename "$pf")"
+        if patch -p1 --dry-run --forward --force < "$pf" >/dev/null 2>&1; then
+            patch -p1 --forward < "$pf" >/dev/null
+            echo "   applied      $name"
+        elif patch -p1 --dry-run --reverse --force < "$pf" >/dev/null 2>&1; then
+            echo "   already in   $name"
+        else
+            # Neither cleanly appliable nor cleanly reversible. Reporting
+            # "already applied (or the source differs)" here treated a tree that
+            # does not match at all as success, which is how issue #2 got
+            # several screens past the real problem.
+            echo "ERROR: $name applies neither forward nor in reverse -" >&2
+            echo "       this source tree is not what is expected." >&2
+            exit 1
+        fi
+    done
+
+    # Assert the effect, not just the exit status: a patch can apply with fuzz
+    # into the wrong place.
+    if grep -q '4.0f' src/ipa/simple/algorithms/awb.cpp; then
+        echo "ERROR: a 4.0f gain clamp is still present in awb.cpp" >&2
         exit 1
     fi
-    grep -n -A10 'Calculate red and blue gains' src/ipa/simple/algorithms/awb.cpp | sed 's/^/   /'
-    if grep -q '4.0f' src/ipa/simple/algorithms/awb.cpp; then
-        echo "   WARNING: a 4.0f clamp is still present - check the patch applied fully" >&2
+    if grep -q 'SWSTATS_FINISH_LINE_STATS()' src/libcamera/software_isp/swstats_cpu.cpp; then
+        echo "ERROR: swstats_cpu.cpp still sums in the input's own bit depth;" >&2
+        echo "       the AWB will subtract an 8-bit black level from it." >&2
+        exit 1
     fi
+    echo "   verified: no gain clamp, stats sums scaled to 8 bits"
 
     echo
     echo "== applying the measured ov5675 sensor delays =="
